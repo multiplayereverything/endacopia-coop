@@ -1000,21 +1000,26 @@ static void HostDoSnapshot()
         return;
     }
     const uint32_t seed = (uint32_t)GetTickCount() ^ (uint32_t)(tick_no * 2654435761u);
-    Writer w;
-    w.u32(tick_no);
-    w.u32(seed);
     // files go first so the guest's save dir matches before restoring
-    w.u8(guest_needs_files ? 1 : 0);
+    Writer files;
+    files.u8(guest_needs_files ? 1 : 0);
     if (guest_needs_files)
     {
-        CollectDir(w, 0, NetPlayEngine::GetUserDataDir());
-        CollectDir(w, 1, NetPlayEngine::GetAppDataDir());
+        CollectDir(files, 0, NetPlayEngine::GetUserDataDir());
+        CollectDir(files, 1, NetPlayEngine::GetAppDataDir());
     }
 
+    // NOTE: restoring runs fade effects, which run frames (and advance
+    // tick_no); the guest's restore runs exactly the same frames, so the
+    // shared timeline starts at the tick *after* the restore.
     NetPlayEngine::RestoreSnapshot(tmp, 1000);
     File::DeleteFile(tmp);
     srand(seed);
     ResetNetInput();
+    Writer w;
+    w.u32(tick_no);
+    w.u32(seed);
+    w.bytes(files.b.data(), files.b.size());
     // the logical mouse after restore is part of the snapshot message
     w.i32(logical_x);
     w.i32(logical_y);
@@ -1029,7 +1034,7 @@ static void HostDoSnapshot()
     cur_rec.tick = tick_no;
     NetPlayEngine::ComputeStateHash(cur_rec.hash);
     last_active[0] = last_active[1] = tick_no;
-    Log("snapshot sent at tick %u (%u bytes save)", tick_no, (unsigned)save_bytes.size());
+    Log("snapshot sent at tick %u (%u bytes save) misc: %s", tick_no, (unsigned)save_bytes.size(), NetPlayEngine::DescribeMisc().GetCStr());
     SetHud("Player 2 joined - co-op active", false, 6);
 }
 
@@ -1302,6 +1307,7 @@ static void GuestBeginRecord(uint32_t tick)
         static const char *names[6] = { "room/player", "characters", "room objects", "script globals", "gui/cursor", "misc" };
         String why = "state hash differs:";
         for (int i = 0; i < 6; ++i) if (diff & (1u << i)) { why.Append(" "); why.Append(names[i]); }
+        why.AppendFmt(" | guest misc: %s", NetPlayEngine::DescribeMisc().GetCStr());
         Writer w; w.u32(tick); w.u32(diff); w.str(why);
         peer.Send(kMsg_Desync, w.b);
         FlagDesync(why.GetCStr());

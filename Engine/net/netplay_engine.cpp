@@ -161,6 +161,12 @@ void SaveScreenshot(const String &path)
 
 int GetCurrentFrameRate() { return frames_per_second; }
 
+String DescribeMisc()
+{
+    return String::FromFormat("score=%d cutscene=%d ff=%d paused=%d roomchanges=%d fps=%d wait=%d",
+        play.score, play.in_cutscene, play.fast_forward, game_paused, play.room_changes, frames_per_second, play.wait_counter);
+}
+
 bool MakeSnapshot(const String &tmp_path, std::vector<uint8_t> &bytes)
 {
     {
@@ -254,7 +260,8 @@ void ComputeStateHash(uint32_t out[6])
     misc.i(play.in_cutscene);
     misc.i(play.fast_forward);
     misc.i(game_paused);
-    misc.i(play.room_changes);
+    // play.room_changes is only compared relatively by the engine; its absolute
+    // value differs per session, so it is not hashed
     misc.i(frames_per_second);
     misc.i(play.wait_counter);
 

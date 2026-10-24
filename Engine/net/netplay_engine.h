@@ -44,6 +44,7 @@ namespace NetPlayEngine
     String DescribeState();  // for automation "state"
     void   SaveScreenshot(const String &path);
     int    GetCurrentFrameRate();
+    String DescribeMisc();   // misc hash fields, for desync diagnostics
 
     // Snapshot (savegame) helpers
     bool MakeSnapshot(const String &tmp_path, std::vector<uint8_t> &bytes);
