@@ -514,6 +514,11 @@ void ags_net_set_mouse_buttons(int state, int accum) {
     mouse_accum_button_state = accum;
 }
 
+void ags_net_reset_input_history() {
+    butwas = 0;
+    mouse_z_was = sys_mouse_z;
+}
+
 void ags_net_add_wheel(int dz) {
     sys_mouse_z += dz;
 }

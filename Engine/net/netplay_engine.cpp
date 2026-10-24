@@ -59,6 +59,8 @@ void render_to_screen();
 void ags_net_push_key_event(const SDL_Event &evt);
 void ags_net_set_mouse_buttons(int state, int accum);
 void ags_net_add_wheel(int dz);
+void ags_net_reset_input_history();
+void reset_gui_mouse_hold();
 
 bool netplay_watch_enabled = false;
 static int watch_script = -1, watch_offset = 0;
@@ -126,6 +128,8 @@ void ResetInputState()
 {
     ags_clear_input_state();
     ags_net_set_mouse_buttons(0, 0);
+    ags_net_reset_input_history();
+    reset_gui_mouse_hold();
 }
 
 void WindowToGame(int &x, int &y)

@@ -1411,6 +1411,8 @@ void OnFrameBoundary()
             if (oracle_at != play_rec.oracles.size())
             {
                 String kinds;
+                for (const auto &ev : play_rec.events)
+                    kinds.AppendFmt("ev%d/p%d/%d ", ev.type, ev.player, ev.type == kEv_Key ? ev.scancode : ev.mask);
                 for (size_t i = 0; i < play_rec.oracles.size() && i < 24; ++i)
                     kinds.AppendFmt("%d%s", play_rec.oracles[i].kind, i + 1 == oracle_at ? "*" : ",");
                 FlagDesync(String::FromFormat("oracle count mismatch at tick %u (%u of %u used; host kinds %s; eip host %d guest %d; %s)",

@@ -224,6 +224,16 @@ static void toggle_mouse_lock()
     }
 }
 
+// GUI button held since an earlier frame; reset by netplay so both peers start alike.
+static eAGSMouseButton wasbutdown = kMouseNone;
+static int wasongui = 0;
+
+void reset_gui_mouse_hold()
+{
+    wasbutdown = kMouseNone;
+    wasongui = 0;
+}
+
 // Runs default mouse button handling
 static void check_mouse_controls()
 {
@@ -236,8 +246,6 @@ static void check_mouse_controls()
         remove_popup_interface(ifacepopped);
 
     // check mouse clicks on GUIs
-    static eAGSMouseButton wasbutdown = kMouseNone;
-    static int wasongui = 0;
 
     if ((wasbutdown > kMouseNone) && (ags_misbuttondown(wasbutdown))) {
         gui_on_mouse_hold(wasongui, wasbutdown);
