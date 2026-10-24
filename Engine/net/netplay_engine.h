@@ -1,10 +1,4 @@
-//=============================================================================
-//
-// Endacopia Multiplayer (AGS-MP): engine-side helpers used by netplay core.
-// Implemented in netplay_engine.cpp, which is the only netplay unit that
-// touches engine internals directly.
-//
-//=============================================================================
+// Engine-side helpers for the netplay core; the only netplay unit that touches engine internals.
 #ifndef __AGS_EE_NET__NETPLAY_ENGINE_H
 #define __AGS_EE_NET__NETPLAY_ENGINE_H
 
@@ -31,8 +25,9 @@ namespace NetPlayEngine
     void InjectVanillaText(const char *text);
     // Local-only service actions
     void ToggleFullscreen();
+    // Draws only the engine overlay (status HUD), used while the guest waits to join.
+    void RenderWaitScreen();
 
-    // Game info
     String GetGameGuid();
     String GetTranslationName();
     void   ChangeTranslation(const String &name);
@@ -46,11 +41,10 @@ namespace NetPlayEngine
     int    GetCurrentFrameRate();
     String DescribeMisc();   // misc hash fields, for desync diagnostics
 
-    // Snapshot (savegame) helpers
     bool MakeSnapshot(const String &tmp_path, std::vector<uint8_t> &bytes);
     void RestoreSnapshot(const String &path, int slot);
 
-    // Desync detection: per-component state hashes
+    // Six component hashes so a desync report says which part of the state diverged.
     void ComputeStateHash(uint32_t out[6]);
 }
 

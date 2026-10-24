@@ -15,8 +15,7 @@
 #include "media/audio/audio_core.h"
 #include "net/netplay.h"
 
-// netplay: audio playback runs on its own thread and real time, so every
-// state the game logic observes is taken from the host (oracle)
+// netplay: playback runs on the audio thread in real time, so the guest uses the host's observed state.
 static PlaybackState NetSyncState(NetPlay::OracleKind kind, PlaybackState st)
 {
     return static_cast<PlaybackState>(NetPlay::OracleInt(kind, static_cast<int>(st)));

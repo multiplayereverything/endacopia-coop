@@ -432,6 +432,12 @@ void QuitGame(int dialog) {
         restore_after_dialog();
         if (rcode==0) return;
     }
+    // netplay: only the player who chose Quit leaves; the other keeps playing
+    if (NetPlay::IsSynced() && !NetPlay::LocalPlayerActedLast())
+    {
+        Debug::Printf(kDbgMsg_Info, "[MP] other player quit the game; continuing");
+        return;
+    }
     quit("|You have exited.");
 }
 

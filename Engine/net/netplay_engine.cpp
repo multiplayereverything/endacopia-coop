@@ -1,8 +1,3 @@
-//=============================================================================
-//
-// Endacopia Multiplayer (AGS-MP): engine-side netplay helpers.
-//
-//=============================================================================
 #include "net/netplay_engine.h"
 #include <memory>
 #include <SDL.h>
@@ -24,6 +19,7 @@
 #include "device/mousew32.h"
 #include "game/savegame.h"
 #include "gfx/bitmap.h"
+#include "gfx/graphicsdriver.h"
 #include "gui/guimain.h"
 #include "main/engine.h"
 #include "main/graphics_mode.h"
@@ -47,6 +43,8 @@ extern int game_paused;
 extern RGB palette[256];
 extern int frames_per_second;
 extern int ifacepopped;
+extern IGraphicsDriver *gfxDriver;
+void render_to_screen();
 
 // sys_events.cpp netplay hooks
 void ags_net_push_key_event(const SDL_Event &evt);
@@ -120,6 +118,12 @@ void ToggleFullscreen()
     engine_try_switch_windowed_gfxmode();
 }
 
+void RenderWaitScreen()
+{
+    gfxDriver->ClearDrawLists();
+    render_to_screen();
+}
+
 String GetGameGuid() { return game.guid; }
 String GetTranslationName() { return get_translation_name(); }
 void ChangeTranslation(const String &name) { Game_ChangeTranslation(name.GetCStr()); }
@@ -190,9 +194,6 @@ void RestoreSnapshot(const String &path, int slot)
     try_restore_save(path, slot);
 }
 
-//-----------------------------------------------------------------------------
-// State hashing
-//-----------------------------------------------------------------------------
 struct Fnv
 {
     uint32_t h = 2166136261u;
@@ -260,8 +261,7 @@ void ComputeStateHash(uint32_t out[6])
     misc.i(play.in_cutscene);
     misc.i(play.fast_forward);
     misc.i(game_paused);
-    // play.room_changes is only compared relatively by the engine; its absolute
-    // value differs per session, so it is not hashed
+    // play.room_changes is per-session and only compared relatively, so it is not hashed.
     misc.i(frames_per_second);
     misc.i(play.wait_counter);
 

@@ -365,13 +365,10 @@ static int main_process_cmdline(ConfigTree &cfg, int argc, char *argv[])
         cmdGameDataPath = platform->GetCommandArg(datafile_argv);
     }
 
-    // netplay guest: never touch the player's own saves, the host's saves are
-    // mirrored into a separate folder
+    // Netplay guest gets a separate save folder so the host's mirrored saves never overwrite its own.
     if (NetPlay::GetRole() == NetPlay::kRoleGuest)
     {
         String gdir = NetPlay::GetGuestDataDir();
-        Directory::CreateAllDirectories("", gdir);
-        Directory::CreateAllDirectories("", Path::ConcatPaths(gdir, "shared"));
         cfg["misc"]["user_data_dir"] = gdir;
         cfg["misc"]["shared_data_dir"] = Path::ConcatPaths(gdir, "shared");
     }

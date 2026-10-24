@@ -1,9 +1,4 @@
-//=============================================================================
-//
-// Endacopia Multiplayer (AGS-MP): netplay core.
-// See netplay.h for the overall design.
-//
-//=============================================================================
+// Netplay core: sockets, tick records, oracles, join/resync. Design notes are in netplay.h.
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <winsock2.h>
@@ -34,9 +29,6 @@ void sys_evt_process_one(const SDL_Event &event);
 namespace NetPlay
 {
 
-//-----------------------------------------------------------------------------
-// Constants
-//-----------------------------------------------------------------------------
 static const uint32_t MP_MAGIC    = 0x31504D45; // 'EMP1'
 static const uint32_t MP_PROTOCOL = 3;
 static const int      DEFAULT_PORT = 27960;
@@ -67,9 +59,6 @@ enum EvType : uint8_t
     kEv_Text
 };
 
-//-----------------------------------------------------------------------------
-// Byte buffer helpers
-//-----------------------------------------------------------------------------
 struct Writer
 {
     std::vector<uint8_t> b;
@@ -97,9 +86,6 @@ struct Reader
     std::vector<uint8_t> blob() { uint32_t len = u32(); std::vector<uint8_t> v; if (!need(len)) return v; v.assign(p + at, p + at + len); at += len; return v; }
 };
 
-//-----------------------------------------------------------------------------
-// Data structures
-//-----------------------------------------------------------------------------
 struct NetEvent
 {
     uint8_t type = 0;
@@ -196,15 +182,13 @@ static bool ReadRecord(Reader &r, TickRecord &rec)
     return !r.bad;
 }
 
-//-----------------------------------------------------------------------------
-// Socket connection with framing
-//-----------------------------------------------------------------------------
 struct Connection
 {
     SOCKET sock = INVALID_SOCKET;
     std::vector<uint8_t> inbuf;
     std::vector<uint8_t> outbuf;
     size_t out_at = 0;
+    size_t max_msg = MAX_MSG_SIZE; // host limits what a guest may send
 
     bool IsOpen() const { return sock != INVALID_SOCKET; }
 
@@ -299,7 +283,7 @@ struct Connection
     {
         if (inbuf.size() < 5) return false;
         uint32_t len = inbuf[0] | (inbuf[1] << 8) | (inbuf[2] << 16) | ((uint32_t)inbuf[3] << 24);
-        if (len == 0 || len > MAX_MSG_SIZE) { Close(); return false; }
+        if (len == 0 || len > max_msg) { Close(); return false; }
         if (inbuf.size() < 4 + (size_t)len) return false;
         type = inbuf[4];
         payload.assign(inbuf.begin() + 5, inbuf.begin() + 4 + len);
@@ -308,9 +292,6 @@ struct Connection
     }
 };
 
-//-----------------------------------------------------------------------------
-// State
-//-----------------------------------------------------------------------------
 enum GuestPhase
 {
     kGuest_Off,
@@ -347,6 +328,7 @@ static int  local_x = 0, local_y = 0;
 static bool local_seen = false;
 static int  remote_x = -1000, remote_y = -1000;
 static bool remote_seen = false;
+static int  last_actor = 0;       // player of the latest click/key
 
 // Host state
 static bool guest_hello = false;
@@ -377,7 +359,6 @@ static String snapshot_path;
 static std::vector<NetEvent> guest_out;  // guest input to send
 static uint32_t desync_count = 0;
 
-// HUD
 static String hud_text;
 static auto hud_until = std::chrono::steady_clock::now();
 static bool hud_sticky = false;
@@ -401,9 +382,6 @@ static void SetHud(const String &text, bool sticky = false, int seconds = 6)
     hud_until = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
 }
 
-//-----------------------------------------------------------------------------
-// Startup / config
-//-----------------------------------------------------------------------------
 bool ParseCmdArg(int argc, char *argv[], int &ee)
 {
     const char *arg = argv[ee];
@@ -445,14 +423,30 @@ bool ParseCmdArg(int argc, char *argv[], int &ee)
     return false;
 }
 
+// AGS refuses to create a missing parent dir, so build the whole chain here.
+static void EnsureDir(const String &path)
+{
+    String p = path;
+    p.Replace('/', '\\');
+    for (size_t i = 3; i <= p.GetLength(); ++i)
+    {
+        if (i == p.GetLength() || p.GetAt(i) == '\\')
+            CreateDirectoryA(p.Left(i).GetCStr(), nullptr);
+    }
+}
+
 String GetGuestDataDir()
 {
-    if (!cfg.guest_data_dir.IsEmpty())
-        return cfg.guest_data_dir;
-    char buf[MAX_PATH] = {};
-    DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", buf, MAX_PATH);
-    String base = (n > 0 && n < MAX_PATH) ? String(buf) : String(".");
-    return Path::ConcatPaths(base, "EndacopiaMP/guest-saves");
+    String dir = cfg.guest_data_dir;
+    if (dir.IsEmpty())
+    {
+        char buf[MAX_PATH] = {};
+        DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", buf, MAX_PATH);
+        String base = (n > 0 && n < MAX_PATH) ? String(buf) : String(".");
+        dir = Path::ConcatPaths(base, "EndacopiaMP/guest-saves");
+    }
+    EnsureDir(Path::ConcatPaths(dir, "shared"));
+    return dir;
 }
 
 static SOCKET OpenListen(int port, bool loopback_only)
@@ -540,9 +534,6 @@ bool IsInputRouted()
 bool IsReplaying() { return cfg.role == kRoleGuest && synced && gphase == kGuest_Synced; }
 bool IsRecording() { return cfg.role == kRoleHost && synced; }
 
-//-----------------------------------------------------------------------------
-// Input capture
-//-----------------------------------------------------------------------------
 static int SdlButtonMask(int button)
 {
     switch (button)
@@ -650,9 +641,16 @@ void GetLogicalMouse(int &x, int &y) { x = logical_x; y = logical_y; }
 void SetLogicalMouse(int x, int y) { logical_x = x; logical_y = y; }
 bool IsScancodeDown(int scancode) { return scancode >= 0 && scancode < 512 && keys_down[scancode]; }
 
+bool LocalPlayerActedLast()
+{
+    return last_actor == (cfg.role == kRoleGuest ? 1 : 0);
+}
+
 // Applies one synced event to the engine input state; identical on both peers
 static void ApplyEvent(const NetEvent &e)
 {
+    if (e.type == kEv_Button || e.type == kEv_Key || e.type == kEv_Text)
+        last_actor = e.player & 1;
     switch (e.type)
     {
     case kEv_Move:
@@ -748,9 +746,6 @@ static void HostMergeInput(std::vector<NetEvent> &out)
     remote_q.clear();
 }
 
-//-----------------------------------------------------------------------------
-// Oracles
-//-----------------------------------------------------------------------------
 static void FlagDesync(const char *why);
 
 int OracleInt(OracleKind kind, int local_value)
@@ -794,9 +789,7 @@ void OracleBlob(OracleKind kind, std::vector<uint8_t> &data)
     }
 }
 
-//-----------------------------------------------------------------------------
-// File mirroring (join): host sends its user data, guest writes it
-//-----------------------------------------------------------------------------
+// Join: the host sends its save folder so file reads match on both peers.
 static void CollectDir(Writer &w, uint8_t dir_id, const String &dir)
 {
     std::vector<std::pair<String, std::vector<uint8_t>>> files;
@@ -827,7 +820,8 @@ static void WriteDirFiles(Reader &r, const String &user_dir, const String &app_d
         uint8_t dir_id = r.u8();
         uint32_t count = r.u32();
         String dir = dir_id == 0 ? user_dir : app_dir;
-        bool writable = !dir.IsEmpty() && Directory::CreateAllDirectories("", dir);
+        // A relative dir means the engine fell back to the game folder; never mirror there.
+        bool writable = !dir.IsEmpty() && !dir.StartsWith(".") && File::IsDirectory(dir);
         if (writable && dir_id == 0)
         {
             // drop stale saves so the mirror matches host exactly
@@ -850,9 +844,6 @@ static void WriteDirFiles(Reader &r, const String &user_dir, const String &app_d
     }
 }
 
-//-----------------------------------------------------------------------------
-// Host side
-//-----------------------------------------------------------------------------
 static void HostDropGuest(const char *why)
 {
     Log("guest dropped: %s", why);
@@ -960,6 +951,7 @@ static void HostPoll()
         if (s != INVALID_SOCKET)
         {
             peer.Attach(s);
+            peer.max_msg = 1u << 20;
             Log("guest connected");
             SetHud("Player 2 connecting...", true);
         }
@@ -991,8 +983,7 @@ static void HostDoSnapshot()
 {
     String tmp = Path::ConcatPaths(NetPlayEngine::GetUserDataDir(), "mp_snapshot.tmp");
     std::vector<uint8_t> save_bytes;
-    // Stop recording while we restore our own snapshot; both peers restore
-    // the identical bytes the same way.
+    // Not recording while we restore; the guest restores the same bytes the same way.
     synced = false;
     if (!NetPlayEngine::MakeSnapshot(tmp, save_bytes))
     {
@@ -1009,9 +1000,7 @@ static void HostDoSnapshot()
         CollectDir(files, 1, NetPlayEngine::GetAppDataDir());
     }
 
-    // NOTE: restoring runs fade effects, which run frames (and advance
-    // tick_no); the guest's restore runs exactly the same frames, so the
-    // shared timeline starts at the tick *after* the restore.
+    // Restoring runs fade frames that advance tick_no, so the shared timeline starts after the restore.
     NetPlayEngine::RestoreSnapshot(tmp, 1000);
     File::DeleteFile(tmp);
     srand(seed);
@@ -1038,9 +1027,6 @@ static void HostDoSnapshot()
     SetHud("Player 2 joined - co-op active", false, 6);
 }
 
-//-----------------------------------------------------------------------------
-// Guest side
-//-----------------------------------------------------------------------------
 static void GuestGoSolo(const char *why)
 {
     Log("host connection ended: %s", why);
@@ -1182,6 +1168,13 @@ static void FlagDesync(const char *why)
 
 static bool PumpSystemWhileWaiting()
 {
+    // before the game is loaded nothing else draws: show the HUD (status)
+    static DWORD last_draw = 0;
+    if (!NetPlayEngine::IsGameLoaded() && GetTickCount() - last_draw > 200)
+    {
+        NetPlayEngine::RenderWaitScreen();
+        last_draw = GetTickCount();
+    }
     // keep the window responsive; input is captured (routed) by netplay
     SDL_Event evt;
     while (SDL_PollEvent(&evt))
@@ -1192,7 +1185,6 @@ static bool PumpSystemWhileWaiting()
         }
         if (!CaptureEvent(evt))
         {
-            // window events etc.
             sys_evt_process_one(evt);
         }
     }
@@ -1258,8 +1250,7 @@ String GuestWaitForJoin(int &slot)
     return snapshot_path;
 }
 
-// Guest: block until record for 'tick' is available. Returns false if we
-// stopped being a synced guest.
+// Guest: blocks until the record for 'tick' arrives; false if we stopped being a synced guest.
 static bool GuestFetchRecord(uint32_t tick, TickRecord &out)
 {
     for (;;)
@@ -1319,9 +1310,6 @@ static void GuestBeginRecord(uint32_t tick)
     ApplyRecordInput(play_rec);
 }
 
-//-----------------------------------------------------------------------------
-// Frame boundary
-//-----------------------------------------------------------------------------
 void OnFrameBoundary()
 {
     PollControl();
@@ -1415,9 +1403,6 @@ void OnSnapshotRestored()
     GuestBeginRecord(tick_no);
 }
 
-//-----------------------------------------------------------------------------
-// Rendering helpers
-//-----------------------------------------------------------------------------
 bool GetLocalCursor(int &x, int &y)
 {
     if (!synced || !local_seen) return false;
@@ -1453,9 +1438,7 @@ String GetHudText()
 
 void ComputeStateHash(uint32_t out[6]) { NetPlayEngine::ComputeStateHash(out); }
 
-//-----------------------------------------------------------------------------
-// Automation control (localhost only), used for unattended playtests
-//-----------------------------------------------------------------------------
+// Automation port (localhost only) for unattended playtests.
 static void CtlReply(const String &s)
 {
     if (!ctl.IsOpen()) return;
