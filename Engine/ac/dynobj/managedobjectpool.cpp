@@ -295,6 +295,8 @@ int ManagedObjectPool::ReadFromDisk(Stream *in, ICCObjectReader *reader) {
             available_ids.push(i);
         }
     }
+    // netplay: GC timing decides which handles get reused, so it must restart identically on every restore
+    objectCreationCounter = 0;
 
     return 0;
 }

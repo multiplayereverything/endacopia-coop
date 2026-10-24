@@ -38,6 +38,19 @@
 #include "util/memory.h"
 #include "util/string_utils.h" // linux strnicmp definition
 
+// Netplay --mp-watch debugging (netplay_engine.cpp).
+extern bool netplay_watch_enabled;
+void netplay_watch_check(const ccInstance *inst, const char *addr, int32_t value, int line);
+void netplay_note_extcall(const RuntimeScriptValue &fn, int32_t ret);
+
+// Globals are addressed through RValue (see RuntimeScriptValue::ReadValue).
+static void netplay_watch_mar(const ccInstance *inst, const RuntimeScriptValue &mar, int32_t value, int line)
+{
+    const char *addr = (mar.Type == kScValGlobalVar && mar.RValue && mar.RValue->Type == kScValData) ?
+        mar.RValue->GetPtrWithOffset() + mar.IValue : mar.GetPtrWithOffset();
+    netplay_watch_check(inst, addr, value, line);
+}
+
 using namespace AGS::Common;
 using namespace AGS::Common::Memory;
 
@@ -662,13 +675,16 @@ int ccInstance::Run(int32_t curpc)
           switch (arg1.IValue)
           {
           case sizeof(char):
+              if (netplay_watch_enabled) netplay_watch_mar(this, registers[SREG_MAR], arg2.IValue, line_number);
               registers[SREG_MAR].WriteByte(arg2.IValue);
               break;
           case sizeof(int16_t):
+              if (netplay_watch_enabled) netplay_watch_mar(this, registers[SREG_MAR], arg2.IValue, line_number);
               registers[SREG_MAR].WriteInt16(arg2.IValue);
               break;
           case sizeof(int32_t):
               // We do not know if this is math integer or some pointer, etc
+              if (netplay_watch_enabled) netplay_watch_mar(this, registers[SREG_MAR], arg2.IValue, line_number);
               registers[SREG_MAR].WriteValue(arg2);
               break;
           default:
@@ -702,6 +718,8 @@ int ccInstance::Run(int32_t curpc)
           break;
       case SCMD_MEMWRITE:
           // Take the data address from reg[MAR] and copy there int32_t from reg[arg1]
+          if (netplay_watch_enabled)
+              netplay_watch_mar(this, registers[SREG_MAR], reg1.IValue, line_number);
           registers[SREG_MAR].WriteValue(reg1);
           break;
       case SCMD_LOADSPOFFS:
@@ -813,10 +831,12 @@ int ccInstance::Run(int32_t curpc)
           break;
       case SCMD_MEMWRITEB:
           // Take the data address from reg[MAR] and copy there byte from reg[arg1]
+          if (netplay_watch_enabled) netplay_watch_mar(this, registers[SREG_MAR], reg1.IValue, line_number);
           registers[SREG_MAR].WriteByte(reg1.IValue);
           break;
       case SCMD_MEMWRITEW:
           // Take the data address from reg[MAR] and copy there int16_t from reg[arg1]
+          if (netplay_watch_enabled) netplay_watch_mar(this, registers[SREG_MAR], reg1.IValue, line_number);
           registers[SREG_MAR].WriteInt16(reg1.IValue);
           break;
       case SCMD_JZ:
@@ -953,7 +973,8 @@ int ccInstance::Run(int32_t curpc)
           if (handle != newHandle) {
               ccReleaseObjectReference(handle);
               ccAddObjectReference(newHandle);
-              registers[SREG_MAR].WriteInt32(newHandle);
+              if (netplay_watch_enabled) netplay_watch_mar(this, registers[SREG_MAR], newHandle, line_number);
+          registers[SREG_MAR].WriteInt32(newHandle);
           }
           break;
                              }
@@ -985,6 +1006,7 @@ int ccInstance::Run(int32_t curpc)
               return -1;
 
           ccAddObjectReference(newHandle);
+          if (netplay_watch_enabled) netplay_watch_mar(this, registers[SREG_MAR], newHandle, line_number);
           registers[SREG_MAR].WriteInt32(newHandle);
           break;
                             }
@@ -1157,6 +1179,8 @@ int ccInstance::Run(int32_t curpc)
             return -1;
           }
 
+          if (netplay_watch_enabled)
+              netplay_note_extcall(reg1, return_value.IValue);
           registers[SREG_AX] = return_value;
           next_call_needs_object = 0;
           num_args_to_func = -1;

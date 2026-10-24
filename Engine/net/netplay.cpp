@@ -145,6 +145,8 @@ struct TickRecord
     std::vector<NetEvent> events;
     std::vector<OracleEntry> oracles;
     int16_t cursor[2][2] = {};
+    std::vector<uint32_t> gchunks; // only with --mp-debug
+    int32_t eip = 0;               // only with --mp-debug: engine location at the boundary
 };
 
 static void WriteRecord(Writer &w, const TickRecord &rec)
@@ -161,6 +163,9 @@ static void WriteRecord(Writer &w, const TickRecord &rec)
         if (o.is_blob) w.blob(o.data); else w.i32(o.value);
     }
     for (int p = 0; p < 2; ++p) { w.i16(rec.cursor[p][0]); w.i16(rec.cursor[p][1]); }
+    w.u32((uint32_t)rec.gchunks.size());
+    for (uint32_t c : rec.gchunks) w.u32(c);
+    w.i32(rec.eip);
 }
 
 static bool ReadRecord(Reader &r, TickRecord &rec)
@@ -179,6 +184,9 @@ static bool ReadRecord(Reader &r, TickRecord &rec)
         rec.oracles.push_back(std::move(o));
     }
     for (int p = 0; p < 2; ++p) { rec.cursor[p][0] = r.i16(); rec.cursor[p][1] = r.i16(); }
+    uint32_t nc = r.u32();
+    for (uint32_t i = 0; i < nc && !r.bad; ++i) rec.gchunks.push_back(r.u32());
+    rec.eip = r.i32();
     return !r.bad;
 }
 
@@ -309,6 +317,7 @@ struct Config
     String name = "Player";
     int control_port = 0;
     String guest_data_dir;
+    bool debug = false;
 } static cfg;
 
 static bool wsa_ready = false;
@@ -358,6 +367,8 @@ static int snapshot_mx = 0, snapshot_my = 0, snapshot_owner = 0;
 static String snapshot_path;
 static std::vector<NetEvent> guest_out;  // guest input to send
 static uint32_t desync_count = 0;
+// Host, --mp-debug: script globals of recent ticks, to report host values at a guest's desync tick.
+static std::deque<std::pair<uint32_t, std::vector<uint8_t>>> globals_history;
 
 static String hud_text;
 static auto hud_until = std::chrono::steady_clock::now();
@@ -413,6 +424,19 @@ bool ParseCmdArg(int argc, char *argv[], int &ee)
     if (_stricmp(arg, "--mp-control") == 0 && ee + 1 < argc)
     {
         cfg.control_port = atoi(argv[++ee]);
+        return true;
+    }
+    if (_stricmp(arg, "--mp-watch") == 0 && ee + 1 < argc)
+    {
+        String spec = argv[++ee];
+        size_t colon = spec.FindChar(':');
+        if (colon != String::NoIndex)
+            NetPlayEngine::SetWatch(atoi(spec.GetCStr()), atoi(spec.GetCStr() + colon + 1));
+        return true;
+    }
+    if (_stricmp(arg, "--mp-debug") == 0)
+    {
+        cfg.debug = true;
         return true;
     }
     if (_stricmp(arg, "--mp-guest-dir") == 0 && ee + 1 < argc)
@@ -928,6 +952,21 @@ static void HostHandleMessage(uint8_t type, const std::vector<uint8_t> &payload)
         uint32_t mask = r.u32();
         String why = r.str();
         Log("guest reports desync at tick %u (components 0x%x): %s", t, mask, why.GetCStr());
+        if (cfg.debug)
+            Log("  host now: %s", NetPlayEngine::DescribeDynamicSprites().GetCStr());
+        // Host values are from a later tick, but usually show which variable it is.
+        for (size_t at = why.FindString("| chunk "); at != String::NoIndex; at = why.FindString("| chunk ", at + 1))
+        {
+            const size_t chunk = (size_t)atoi(why.GetCStr() + at + 8);
+            for (const auto &h : globals_history)
+            {
+                if (h.first != t || (chunk + 1) * 64 > h.second.size()) continue;
+                String bytes;
+                for (size_t b = chunk * 64; b < chunk * 64 + 64; b += 4)
+                    bytes.AppendFmt("%08x ", *(const uint32_t*)&h.second[b]);
+                Log("  host at tick %u, chunk %u: %s", t, (unsigned)chunk, bytes.GetCStr());
+            }
+        }
         break;
     }
     case kMsg_Pong:
@@ -1299,11 +1338,28 @@ static void GuestBeginRecord(uint32_t tick)
         String why = "state hash differs:";
         for (int i = 0; i < 6; ++i) if (diff & (1u << i)) { why.Append(" "); why.Append(names[i]); }
         why.AppendFmt(" | guest misc: %s", NetPlayEngine::DescribeMisc().GetCStr());
+        if ((diff & (1u << 5)) && cfg.debug)
+            Log("guest %s", NetPlayEngine::DescribeDynamicSprites().GetCStr());
+        if ((diff & (1u << 3)) && !play_rec.gchunks.empty())
+        {
+            std::vector<uint32_t> mine_chunks;
+            NetPlayEngine::ComputeGlobalChunks(mine_chunks);
+            int shown = 0;
+            for (size_t c = 0; c < mine_chunks.size() && c < play_rec.gchunks.size() && shown < 5; ++c)
+            {
+                if (mine_chunks[c] == play_rec.gchunks[c]) continue;
+                Log("globals differ: chunk %u, guest %s", (unsigned)c, NetPlayEngine::DescribeGlobalChunk(c).GetCStr());
+                why.AppendFmt(" | chunk %u", (unsigned)c);
+                shown++;
+            }
+        }
         Writer w; w.u32(tick); w.u32(diff); w.str(why);
         peer.Send(kMsg_Desync, w.b);
         FlagDesync(why.GetCStr());
         return;
     }
+    if (cfg.debug && play_rec.eip != NetPlayEngine::GetEip())
+        Log("eip differs at tick %u: host %d guest %d", tick, play_rec.eip, NetPlayEngine::GetEip());
     remote_x = play_rec.cursor[0][0];
     remote_y = play_rec.cursor[0][1];
     remote_seen = remote_x > -1000;
@@ -1312,6 +1368,7 @@ static void GuestBeginRecord(uint32_t tick)
 
 void OnFrameBoundary()
 {
+    NetPlayEngine::CheckWatchPerFrame(tick_no);
     PollControl();
     if (cfg.role == kRoleHost)
     {
@@ -1334,6 +1391,14 @@ void OnFrameBoundary()
             cur_rec = TickRecord();
             cur_rec.tick = tick_no;
             NetPlayEngine::ComputeStateHash(cur_rec.hash);
+            if (cfg.debug)
+            {
+                NetPlayEngine::ComputeGlobalChunks(cur_rec.gchunks);
+                cur_rec.eip = NetPlayEngine::GetEip();
+                globals_history.emplace_back(tick_no, std::vector<uint8_t>());
+                NetPlayEngine::CopyGlobals(globals_history.back().second);
+                if (globals_history.size() > 200) globals_history.pop_front();
+            }
             HostMergeInput(cur_rec.events);
             ApplyRecordInput(cur_rec);
         }
@@ -1345,8 +1410,12 @@ void OnFrameBoundary()
         {
             if (oracle_at != play_rec.oracles.size())
             {
-                FlagDesync(String::FromFormat("oracle count mismatch at tick %u (%u of %u used)",
-                    tick_no, (unsigned)oracle_at, (unsigned)play_rec.oracles.size()).GetCStr());
+                String kinds;
+                for (size_t i = 0; i < play_rec.oracles.size() && i < 24; ++i)
+                    kinds.AppendFmt("%d%s", play_rec.oracles[i].kind, i + 1 == oracle_at ? "*" : ",");
+                FlagDesync(String::FromFormat("oracle count mismatch at tick %u (%u of %u used; host kinds %s; eip host %d guest %d; %s)",
+                    tick_no, (unsigned)oracle_at, (unsigned)play_rec.oracles.size(), kinds.GetCStr(), play_rec.eip, NetPlayEngine::GetEip(),
+                    NetPlayEngine::DescribeState().GetCStr()).GetCStr());
             }
         }
         tick_no++;
@@ -1381,6 +1450,12 @@ void OnIdlePoint()
             OnSnapshotRestored();
         }
     }
+}
+
+void RestoreJoinSnapshot(const String &path, int slot)
+{
+    NetPlayEngine::RestoreSnapshot(path, slot);
+    File::DeleteFile(path);
 }
 
 void OnSnapshotRestored()

@@ -132,7 +132,7 @@ void initialize_start_and_play_game(int override_start_room, const String &load_
             String join_save = NetPlay::GuestWaitForJoin(slot);
             if (!join_save.IsEmpty())
             {
-                start_game_load_savegame_on_startup(join_save);
+                NetPlay::RestoreJoinSnapshot(join_save, slot);
                 NetPlay::OnSnapshotRestored();
             }
         }

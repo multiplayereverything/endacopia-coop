@@ -39,13 +39,22 @@ namespace NetPlayEngine
     String DescribeState();  // for automation "state"
     void   SaveScreenshot(const String &path);
     int    GetCurrentFrameRate();
-    String DescribeMisc();   // misc hash fields, for desync diagnostics
+    int    GetEip();         // engine's our_eip location code
+    String DescribeMisc();
+    String DescribeDynamicSprites();   // misc hash fields, for desync diagnostics
 
     bool MakeSnapshot(const String &tmp_path, std::vector<uint8_t> &bytes);
     void RestoreSnapshot(const String &path, int slot);
 
     // Six component hashes so a desync report says which part of the state diverged.
     void ComputeStateHash(uint32_t out[6]);
+    // Debug (--mp-debug): script globals hashed per 64-byte chunk, to locate the variable that diverged.
+    void ComputeGlobalChunks(std::vector<uint32_t> &out);
+    String DescribeGlobalChunk(size_t chunk);
+    void CopyGlobals(std::vector<uint8_t> &out);
+    // --mp-watch <script>:<offset>: logs every script write to that global, with the preceding API calls.
+    void SetWatch(int script, int offset);
+    void CheckWatchPerFrame(uint32_t tick);
 }
 
 #endif // __AGS_EE_NET__NETPLAY_ENGINE_H

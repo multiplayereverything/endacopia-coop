@@ -74,6 +74,8 @@ bool ShouldSkipFrameWait();
 void OnIdlePoint();
 // Guest: blocks until the join snapshot arrives; returns its savegame path, or empty to play solo.
 AGS::Common::String GuestWaitForJoin(int &slot);
+// Guest: restores the join snapshot exactly the way the host restored it.
+void RestoreJoinSnapshot(const AGS::Common::String &path, int slot);
 // Called after a join/resync snapshot was restored (both peers)
 void OnSnapshotRestored();
 
