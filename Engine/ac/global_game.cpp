@@ -11,6 +11,7 @@
 // https://opensource.org/license/artistic-2-0/
 //
 //=============================================================================
+#include "net/netplay.h"
 #include "ac/global_game.h"
 #include <math.h>
 #include <stdio.h>
@@ -220,6 +221,30 @@ void FillSaveList(std::vector<SaveListItem> &saves, unsigned top_index, size_t m
         saves.push_back(SaveListItem(saveGameSlot, description, ff.CurrentTime()));
         if (saves.size() >= max_count)
             break;
+    }
+
+    // netplay: file times and listing order differ per machine; use host's list
+    if (NetPlay::IsRecording() || NetPlay::IsReplaying())
+    {
+        std::vector<uint8_t> blob;
+        for (const auto &s : saves)
+        {
+            int32_t v[3] = { s.Slot, static_cast<int32_t>(s.FileTime), static_cast<int32_t>(s.Description.GetLength()) };
+            blob.insert(blob.end(), (const uint8_t*)v, (const uint8_t*)v + sizeof(v));
+            blob.insert(blob.end(), s.Description.GetCStr(), s.Description.GetCStr() + s.Description.GetLength());
+        }
+        NetPlay::OracleBlob(NetPlay::kOr_SaveList, blob);
+        saves.clear();
+        for (size_t at = 0; at + 12 <= blob.size();)
+        {
+            int32_t v[3];
+            memcpy(v, &blob[at], sizeof(v));
+            at += sizeof(v);
+            if (v[2] < 0 || at + v[2] > blob.size()) break;
+            String desc(reinterpret_cast<const char*>(&blob[at]), v[2]);
+            at += v[2];
+            saves.push_back(SaveListItem(v[0], desc, static_cast<time_t>(v[1])));
+        }
     }
 }
 

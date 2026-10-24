@@ -11,6 +11,7 @@
 // https://opensource.org/license/artistic-2-0/
 //
 //=============================================================================
+#include "net/netplay.h"
 #include <algorithm>
 #include "ac/draw.h"
 #include "ac/game_version.h"
@@ -416,7 +417,8 @@ ScriptCamera *GameState::GetScriptCamera(int index)
 
 bool GameState::IsIgnoringInput() const
 {
-    return AGS_Clock::now() < _ignoreUserInputUntilTime;
+    // netplay: real-time based, so the host decides
+    return NetPlay::OracleInt(NetPlay::kOr_IgnoreInput, AGS_Clock::now() < _ignoreUserInputUntilTime ? 1 : 0) != 0;
 }
 
 void GameState::SetIgnoreInput(int timeout_ms)

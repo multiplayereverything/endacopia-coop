@@ -385,6 +385,10 @@ target_sources(engine
     main/quit.h
     main/update.cpp
     main/update.h
+    net/netplay.cpp
+    net/netplay.h
+    net/netplay_engine.cpp
+    net/netplay_engine.h
     media/audio/ambientsound.cpp
     media/audio/ambientsound.h
     media/audio/audio_core.cpp
@@ -574,7 +578,7 @@ else()
 endif()
 
 if (WIN32)
-    target_link_libraries(engine PUBLIC shlwapi)
+    target_link_libraries(engine PUBLIC shlwapi ws2_32)
 endif()
 
 if(ANDROID)

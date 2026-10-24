@@ -62,6 +62,7 @@
 #include "media/audio/audio_system.h"
 #include "ac/game.h"
 #include "util/wgt2allg.h"
+#include "net/netplay.h"
 
 using namespace AGS::Common;
 using namespace AGS::Engine;
@@ -83,6 +84,9 @@ extern CharacterInfo*playerchar;
 extern int eip_guinum;
 extern int cur_mode,cur_cursor;
 extern IDriverDependantBitmap *mouseCursor;
+extern IDriverDependantBitmap *remoteMouseCursor;
+void draw_netplay_hud(const Rect &viewport);
+void draw_netplay_player_tag(int x, int y);
 extern int hotx,hoty;
 extern int bg_just_changed;
 
@@ -2237,6 +2241,50 @@ void draw_fps(const Rect &viewport)
     invalidate_sprite_glob(1, yp, ddb);
 }
 
+// Netplay status line (connection state, joins, resyncs)
+void draw_netplay_hud(const Rect &viewport)
+{
+    static IDriverDependantBitmap *ddb = nullptr;
+    static Bitmap *hud = nullptr;
+    static String last_text;
+    const String text = NetPlay::GetHudText();
+    if (text.IsEmpty())
+        return;
+    const int font = FONT_NORMAL;
+    if (hud == nullptr)
+        hud = CreateCompatBitmap(viewport.GetWidth(), get_font_surface_height(font) + get_fixed_pixel_size(5));
+    if (text != last_text || ddb == nullptr)
+    {
+        hud->ClearTransparent();
+        wouttext_outline(hud, 2, 1, font, hud->GetCompatibleColor(14), text.GetCStr());
+        if (ddb)
+            gfxDriver->UpdateDDBFromBitmap(ddb, hud, false);
+        else
+            ddb = gfxDriver->CreateDDBFromBitmap(hud, false);
+        last_text = text;
+    }
+    gfxDriver->DrawSprite(0, 0, ddb);
+    invalidate_sprite_glob(0, 0, ddb);
+}
+
+// Small "P1"/"P2" tag next to the other player's cursor
+void draw_netplay_player_tag(int x, int y)
+{
+    static IDriverDependantBitmap *ddb = nullptr;
+    static Bitmap *tag = nullptr;
+    if (ddb == nullptr)
+    {
+        const char *label = NetPlay::GetRole() == NetPlay::kRoleHost ? "P2" : "P1";
+        const int font = FONT_NORMAL;
+        tag = CreateCompatBitmap(get_text_width_outlined(label, font) + 4, get_font_surface_height(font) + 2);
+        tag->ClearTransparent();
+        wouttext_outline(tag, 1, 1, font, tag->GetCompatibleColor(10), label);
+        ddb = gfxDriver->CreateDDBFromBitmap(tag, false);
+    }
+    gfxDriver->DrawSprite(x, y, ddb);
+    invalidate_sprite(x, y, ddb, false);
+}
+
 // Draw GUI controls as separate sprites, each on their own texture
 static void construct_guictrl_tex(GUIMain &gui)
 {
@@ -2665,8 +2713,19 @@ void construct_game_screen_overlay(bool draw_mouse)
         // Stage: mouse cursor
         if (draw_mouse && !play.mouse_cursor_hidden)
         {
-            gfxDriver->DrawSprite(mousex - hotx, mousey - hoty, mouseCursor);
-            invalidate_sprite(mousex - hotx, mousey - hoty, mouseCursor, false);
+            // netplay: other player's cursor (tinted + tag), then our own
+            // cursor at our real position (the logical game cursor is shared)
+            int rx, ry;
+            if (remoteMouseCursor && NetPlay::GetRemoteCursor(rx, ry))
+            {
+                gfxDriver->DrawSprite(rx - hotx, ry - hoty, remoteMouseCursor);
+                invalidate_sprite(rx - hotx, ry - hoty, remoteMouseCursor, false);
+                draw_netplay_player_tag(rx - hotx + remoteMouseCursor->GetWidth(), ry - hoty);
+            }
+            int cx = mousex, cy = mousey;
+            NetPlay::GetLocalCursor(cx, cy);
+            gfxDriver->DrawSprite(cx - hotx, cy - hoty, mouseCursor);
+            invalidate_sprite(cx - hotx, cy - hoty, mouseCursor, false);
         }
         // Stage: screen fx
         if (play.screen_tint >= 1)
@@ -2725,6 +2784,8 @@ void construct_engine_overlay()
 
     if (display_fps != kFPS_Hide)
         draw_fps(viewport);
+
+    draw_netplay_hud(viewport);
 
     gfxDriver->EndSpriteBatch();
 }

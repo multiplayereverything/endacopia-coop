@@ -11,6 +11,7 @@
 // https://opensource.org/license/artistic-2-0/
 //
 //=============================================================================
+#include "net/netplay.h"
 #include <stdio.h>
 #include <math.h>
 #include "core/platform.h"
@@ -778,7 +779,7 @@ void postpone_scheduled_music_update_by(std::chrono::milliseconds duration) {
 
 void process_scheduled_music_update() {
     if (!music_update_scheduled) { return; }
-    if (music_update_at > AGS_Clock::now()) { return; }
+    if (NetPlay::OracleInt(NetPlay::kOr_MusicUpdate, music_update_at > AGS_Clock::now() ? 1 : 0)) { return; }
     cancel_scheduled_music_update();
     update_music_volume();
     apply_volume_drop_modifier(false);

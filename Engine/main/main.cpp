@@ -30,6 +30,7 @@
 #include "main/config.h"
 #include "main/engine.h"
 #include "main/main.h"
+#include "net/netplay.h"
 #include "platform/base/agsplatformdriver.h"
 #include "platform/base/sys_main.h"
 #include "ac/route_finder.h"
@@ -208,6 +209,13 @@ static int main_process_cmdline(ConfigTree &cfg, int argc, char *argv[])
     for (int ee = 1; ee < argc; ++ee)
     {
         const char *arg = argv[ee];
+        // Endacopia Multiplayer options
+        if (NetPlay::ParseCmdArg(argc, argv, ee))
+        {
+            if (NetPlay::GetRole() != NetPlay::kRoleNone)
+                cfg["override"]["multitasking"] = "1"; // keep running when unfocused
+            continue;
+        }
         //
         // Startup options
         //
@@ -355,6 +363,17 @@ static int main_process_cmdline(ConfigTree &cfg, int argc, char *argv[])
     if (datafile_argv > 0)
     {
         cmdGameDataPath = platform->GetCommandArg(datafile_argv);
+    }
+
+    // netplay guest: never touch the player's own saves, the host's saves are
+    // mirrored into a separate folder
+    if (NetPlay::GetRole() == NetPlay::kRoleGuest)
+    {
+        String gdir = NetPlay::GetGuestDataDir();
+        Directory::CreateAllDirectories("", gdir);
+        Directory::CreateAllDirectories("", Path::ConcatPaths(gdir, "shared"));
+        cfg["misc"]["user_data_dir"] = gdir;
+        cfg["misc"]["shared_data_dir"] = Path::ConcatPaths(gdir, "shared");
     }
 
     if (tellInfoKeys.size() > 0)

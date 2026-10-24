@@ -32,6 +32,7 @@
 #include "device/mousew32.h"
 #include "ac/spritecache.h"
 #include "gfx/graphicsdriver.h"
+#include "gfx/ddb.h"
 #include "gfx/gfxfilter.h"
 #include "platform/base/agsplatformdriver.h"
 
@@ -53,6 +54,8 @@ int lastmx=-1,lastmy=-1;
 char alpha_blend_cursor = 0;
 Bitmap *dotted_mouse_cursor = nullptr;
 IDriverDependantBitmap *mouseCursor = nullptr;
+// netplay: the other player's cursor, same graphic but tinted
+IDriverDependantBitmap *remoteMouseCursor = nullptr;
 Bitmap *blank_mouse_cursor = nullptr;
 
 // The Mouse:: functions are static so the script doesn't pass
@@ -384,6 +387,11 @@ void update_cached_mouse_cursor()
     if (mouseCursor != nullptr)
         gfxDriver->DestroyDDB(mouseCursor);
     mouseCursor = gfxDriver->CreateDDBFromBitmap(mousecurs[0], alpha_blend_cursor != 0);
+    if (remoteMouseCursor != nullptr)
+        gfxDriver->DestroyDDB(remoteMouseCursor);
+    remoteMouseCursor = gfxDriver->CreateDDBFromBitmap(mousecurs[0], alpha_blend_cursor != 0);
+    remoteMouseCursor->SetTint(90, 255, 140, 170);
+    remoteMouseCursor->SetAlpha(200);
 }
 
 void set_new_cursor_graphic (int spriteslot) {

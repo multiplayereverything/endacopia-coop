@@ -27,6 +27,7 @@
 #include "debug/out.h"
 #include "gfx/bitmap.h"
 #include "main/graphics_mode.h"
+#include "net/netplay.h"
 #include "platform/base/sys_main.h"
 
 using namespace AGS::Common;
@@ -39,6 +40,8 @@ int mousex = 0, mousey = 0, numcurso = -1, hotx = 0, hoty = 0;
 // real mouse coordinates and bounds (in window coords)
 static int real_mouse_x = 0, real_mouse_y = 0;
 static int boundx1 = 0, boundx2 = 99999, boundy1 = 0, boundy2 = 99999;
+// script bounds in native game coords (used by netplay)
+static Rect game_bounds(0, 0, 99999, 99999);
 char ignore_bounds = 0;
 extern char alpha_blend_cursor ;
 Bitmap *mousecurs[MAXCURSORS];
@@ -71,6 +74,25 @@ void Mouse::Poll()
 {
     // TODO: [sonneveld] find out where mgetgraphpos is needed, are events polled before that?
     sys_evt_process_pending();
+
+    if (NetPlay::IsInputRouted())
+    {
+        // netplay: the in-game cursor is the synced logical mouse, which is
+        // already in native game coordinates
+        int x, y;
+        NetPlay::GetLogicalMouse(x, y);
+        const Rect &vp = play.GetMainViewport();
+        x = Math::Clamp(x, 0, vp.GetWidth() - 1);
+        y = Math::Clamp(y, 0, vp.GetHeight() - 1);
+        if (!ignore_bounds)
+        {
+            x = Math::Clamp(x, game_bounds.Left, game_bounds.Right);
+            y = Math::Clamp(y, game_bounds.Top, game_bounds.Bottom);
+        }
+        mousex = x;
+        mousey = y;
+        return;
+    }
 
     if (switched_away)
         return;
@@ -124,6 +146,19 @@ void Mouse::WindowToGame(int &x, int &y)
     y = GameScaling.Y.UnScalePt(y) - play.GetMainViewport().Top;
 }
 
+void Mouse::WindowToGameClamped(int &x, int &y)
+{
+    x = Math::Clamp(x, Mouse::ControlRect.Left, Mouse::ControlRect.Right);
+    y = Math::Clamp(y, Mouse::ControlRect.Top, Mouse::ControlRect.Bottom);
+    Mouse::WindowToGame(x, y);
+}
+
+void Mouse::GameToWindow(int gx, int gy, int &wx, int &wy)
+{
+    wx = GameScaling.X.ScalePt(gx + play.GetMainViewport().Left);
+    wy = GameScaling.Y.ScalePt(gy + play.GetMainViewport().Top);
+}
+
 void Mouse::UpdateGraphicArea()
 {
     Mouse::ControlRect = GameScaling.ScaleRange(play.GetMainViewport());
@@ -134,6 +169,7 @@ void Mouse::UpdateGraphicArea()
 
 void Mouse::SetMoveLimit(const Rect &r)
 {
+    game_bounds = r;
     Rect src_r = OffsetRect(r, play.GetMainViewport().GetLT());
     Rect dst_r = GameScaling.ScaleRange(src_r);
     boundx1 = dst_r.Left;
@@ -144,6 +180,13 @@ void Mouse::SetMoveLimit(const Rect &r)
 
 void Mouse::SetPosition(const Point &p)
 {
+    if (NetPlay::IsInputRouted())
+    {
+        // netplay: scripts move the synced cursor on both peers; the
+        // players' real cursors are left alone
+        NetPlay::SetLogicalMouse(p.X, p.Y);
+        return;
+    }
     Mouse::SetSysPosition(
         GameScaling.X.ScalePt(p.X + play.GetMainViewport().Left),
         GameScaling.Y.ScalePt(p.Y + play.GetMainViewport().Top));

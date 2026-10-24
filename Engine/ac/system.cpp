@@ -11,6 +11,7 @@
 // https://opensource.org/license/artistic-2-0/
 //
 //=============================================================================
+#include "net/netplay.h"
 #include <SDL.h>
 #include "ac/common.h"
 #include "ac/draw.h"
@@ -124,7 +125,7 @@ int System_GetScrollLock()
 }
 
 int System_GetVsync() {
-    return scsystem.vsync;
+    return NetPlay::OracleInt(NetPlay::kOr_SysVsync, scsystem.vsync);
 }
 
 void System_SetVsync(int newValue) {
@@ -139,7 +140,7 @@ void System_SetVSyncInternal(bool vsync) {
 }
 
 int System_GetWindowed() {
-    return scsystem.windowed;
+    return NetPlay::OracleInt(NetPlay::kOr_SysWindowed, scsystem.windowed);
 }
 
 void System_SetWindowed(int windowed)
@@ -149,7 +150,7 @@ void System_SetWindowed(int windowed)
 }
 
 int System_GetSupportsGammaControl() {
-    return gfxDriver->SupportsGammaControl();
+    return NetPlay::OracleInt(NetPlay::kOr_SysGamma, gfxDriver->SupportsGammaControl());
 }
 
 int System_GetGamma() {

@@ -15,6 +15,7 @@
 // AGS Platform-specific functions
 //
 //=============================================================================
+#include "net/netplay.h"
 #include "platform/base/agsplatformdriver.h"
 #include <stdio.h>
 #include <thread>
@@ -84,6 +85,14 @@ void AGSPlatformDriver::GetSystemTime(ScriptDateTime *sdt) {
     sdt->day = newtime->tm_mday;
     sdt->month = newtime->tm_mon + 1;
     sdt->year = newtime->tm_year + 1900;
+    // netplay: both players see the host's clock
+    sdt->rawUnixTime = NetPlay::OracleInt(NetPlay::kOr_Time, sdt->rawUnixTime);
+    sdt->hour = NetPlay::OracleInt(NetPlay::kOr_Time, sdt->hour);
+    sdt->minute = NetPlay::OracleInt(NetPlay::kOr_Time, sdt->minute);
+    sdt->second = NetPlay::OracleInt(NetPlay::kOr_Time, sdt->second);
+    sdt->day = NetPlay::OracleInt(NetPlay::kOr_Time, sdt->day);
+    sdt->month = NetPlay::OracleInt(NetPlay::kOr_Time, sdt->month);
+    sdt->year = NetPlay::OracleInt(NetPlay::kOr_Time, sdt->year);
 }
 
 void AGSPlatformDriver::WriteStdOut(const char *fmt, ...) {

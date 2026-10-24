@@ -60,6 +60,7 @@
 #include "platform/base/agsplatformdriver.h"
 #include "plugin/agsplugin.h"
 #include "plugin/plugin_engine.h"
+#include "net/netplay.h"
 #include "script/script.h"
 #include "script/script_runtime.h"
 
@@ -1154,6 +1155,10 @@ void RunGameUntilAborted()
 
     while (!abort_engine) {
         GameTick();
+
+        // netplay: outermost loop, no blocking script - safe point for
+        // join/resync snapshots
+        NetPlay::OnIdlePoint();
 
         if (load_new_game) {
             RunAGSGame (nullptr, load_new_game, 0);

@@ -15,6 +15,7 @@
 //
 // Quit game procedure
 //
+#include "net/netplay.h"
 #include <stdio.h>
 #include "core/platform.h"
 #include <allegro.h> // find files, allegro_exit
@@ -200,6 +201,7 @@ void allegro_bitmap_test_release()
 void quit(const char *quitmsg)
 {
     Debug::Printf(kDbgMsg_Info, "Quitting the game...");
+    NetPlay::Shutdown();
 
     // NOTE: we must not use the quitmsg pointer past this step,
     // as it may be from a plugin and we're about to free plugins

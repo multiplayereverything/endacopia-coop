@@ -60,6 +60,10 @@ namespace Mouse
     void SetPosition(const Point &p);
     // Sets the relative position of the cursor's hotspot, in native pixels
     void SetHotspot(int x, int y);
+    // Converts window coords to native game coords, clamped to the game viewport
+    void WindowToGameClamped(int &x, int &y);
+    // Converts native game coords to window coords
+    void GameToWindow(int gx, int gy, int &wx, int &wy);
 }
 
 

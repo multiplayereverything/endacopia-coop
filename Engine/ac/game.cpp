@@ -11,6 +11,9 @@
 // https://opensource.org/license/artistic-2-0/
 //
 //=============================================================================
+#include "net/netplay.h"
+#include <memory>
+#include "util/stream.h"
 #include "ac/game.h"
 #include <stdio.h>
 #include "ac/common.h"
@@ -1025,8 +1028,38 @@ bool test_game_guid(const String &filepath, const String &guid, int legacy_id)
     return legacy_id == g.uniqueid;
 }
 
-HSaveError load_game(const String &path, int slotNumber, bool &data_overwritten)
+// netplay: when a save is restored during co-op, the guest loads the exact
+// bytes of the host's save file instead of its own copy
+static String netplay_sync_save_file(const String &path)
 {
+    if (!NetPlay::IsRecording() && !NetPlay::IsReplaying())
+        return path;
+    std::vector<uint8_t> bytes;
+    if (NetPlay::IsRecording())
+    {
+        std::unique_ptr<Stream> in(File::OpenFileRead(path));
+        if (in)
+        {
+            bytes.resize((size_t)in->GetLength());
+            if (!bytes.empty())
+                in->Read(bytes.data(), bytes.size());
+        }
+    }
+    NetPlay::OracleBlob(NetPlay::kOr_SaveFile, bytes);
+    if (NetPlay::IsRecording())
+        return path;
+    String tmp = Path::ConcatPaths(get_save_game_directory(), "mp_restore.tmp");
+    std::unique_ptr<Stream> out(File::CreateFile(tmp));
+    if (!out)
+        return path;
+    if (!bytes.empty())
+        out->Write(bytes.data(), bytes.size());
+    return tmp;
+}
+
+HSaveError load_game(const String &path_, int slotNumber, bool &data_overwritten)
+{
+    const String path = netplay_sync_save_file(path_);
     data_overwritten = false;
     gameHasBeenRestored++;
 

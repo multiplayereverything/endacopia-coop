@@ -12,6 +12,7 @@
 //
 //=============================================================================
 
+#include "net/netplay.h"
 #include <time.h>
 #include "ac/global_datetime.h"
 #include "ac/datetime.h"
@@ -36,5 +37,5 @@ int sc_GetTime(int whatti) {
 
 int GetRawTime () {
     // TODO: we might need to modify script API to support larger time type
-    return static_cast<int>(time(nullptr));
+    return NetPlay::OracleInt(NetPlay::kOr_Time, static_cast<int>(time(nullptr)));
 }

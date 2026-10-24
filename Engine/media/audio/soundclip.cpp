@@ -13,6 +13,14 @@
 //=============================================================================
 #include "media/audio/soundclip.h"
 #include "media/audio/audio_core.h"
+#include "net/netplay.h"
+
+// netplay: audio playback runs on its own thread and real time, so every
+// state the game logic observes is taken from the host (oracle)
+static PlaybackState NetSyncState(NetPlay::OracleKind kind, PlaybackState st)
+{
+    return static_cast<PlaybackState>(NetPlay::OracleInt(kind, static_cast<int>(st)));
+}
 
 SOUNDCLIP::SOUNDCLIP(int slot)
     : slot_(slot)
@@ -59,7 +67,7 @@ void SOUNDCLIP::pause()
 {
     if (!is_ready())
         return;
-    state = audio_core_slot_pause(slot_);
+    state = NetSyncState(NetPlay::kOr_AudioPause, audio_core_slot_pause(slot_));
 }
 
 void SOUNDCLIP::resume()
@@ -113,7 +121,7 @@ void SOUNDCLIP::seek_ms(int pos_ms)
     audio_core_slot_seek_ms(slot_, (float)pos_ms);
     float posms_f;
     audio_core_slot_get_play_state(slot_, posms_f);
-    posMs = static_cast<int>(posms_f);
+    posMs = NetPlay::OracleInt(NetPlay::kOr_AudioPos, static_cast<int>(posms_f));
     pos = posms_to_pos(posMs);
 }
 
@@ -140,8 +148,8 @@ bool SOUNDCLIP::update()
     }
 
     float posms_f;
-    PlaybackState core_state = audio_core_slot_get_play_state(slot_, posms_f);
-    posMs = static_cast<int>(posms_f);
+    PlaybackState core_state = NetSyncState(NetPlay::kOr_AudioState, audio_core_slot_get_play_state(slot_, posms_f));
+    posMs = NetPlay::OracleInt(NetPlay::kOr_AudioPos, static_cast<int>(posms_f));
     pos = posms_to_pos(posMs);
     if (state == core_state || IsPlaybackDone(core_state))
     {
@@ -152,7 +160,7 @@ bool SOUNDCLIP::update()
     switch (state)
     {
     case PlaybackState::PlayStatePlaying:
-        state = audio_core_slot_play(slot_);
+        state = NetSyncState(NetPlay::kOr_AudioPlay, audio_core_slot_play(slot_));
         break;
     default: /* do nothing */
         break;

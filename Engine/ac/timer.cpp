@@ -15,6 +15,7 @@
 #include "core/platform.h"
 #include <thread>
 #include "ac/sys_events.h"
+#include "net/netplay.h"
 #include "platform/base/agsplatformdriver.h"
 #if defined(AGS_DISABLE_THREADS)
 #include "media/audio/audio_core.h"
@@ -86,11 +87,17 @@ void WaitForNextFrame()
             sys_evt_process_pending();
             platform->YieldCPU();
         }
+        NetPlay::OnFrameBoundary();
         return;
     }
 
     // jump ahead if we're lagging
     if (next_frame_timestamp < (now - MAXIMUM_FALL_BEHIND*frameDuration)) {
+        next_frame_timestamp = now;
+    }
+
+    // netplay guest catching up on buffered host frames: don't sleep
+    if (NetPlay::ShouldSkipFrameWait()) {
         next_frame_timestamp = now;
     }
 
@@ -112,6 +119,9 @@ void WaitForNextFrame()
         sys_evt_process_pending();
         platform->YieldCPU();
     }
+
+    // netplay: frame boundary - exchange and apply the synced tick record
+    NetPlay::OnFrameBoundary();
 }
 
 void skipMissedTicks()

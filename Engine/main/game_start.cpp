@@ -36,6 +36,7 @@
 #include "main/game_run.h"
 #include "main/game_start.h"
 #include "media/audio/audio_system.h"
+#include "net/netplay.h"
 #include "script/script_runtime.h"
 #include "script/script.h"
 
@@ -123,7 +124,21 @@ void initialize_start_and_play_game(int override_start_room, const String &load_
         if (editor_debugging_enabled)
             start_game_init_editor_debugging();
 
-        start_game_load_savegame_on_startup(load_save);
+        NetPlay::Startup();
+        if (NetPlay::GetRole() == NetPlay::kRoleGuest)
+        {
+            // netplay guest: wait for the host's snapshot and start from it
+            int slot = 1000;
+            String join_save = NetPlay::GuestWaitForJoin(slot);
+            if (!join_save.IsEmpty())
+            {
+                start_game_load_savegame_on_startup(join_save);
+                NetPlay::OnSnapshotRestored();
+            }
+        }
+
+        if (displayed_room < 0)
+            start_game_load_savegame_on_startup(load_save);
 
         // only start if not restored a save
         if (displayed_room < 0)

@@ -28,6 +28,7 @@
 #include "platform/base/agsplatformdriver.h"
 #include "platform/base/sys_main.h"
 #include "main/engine.h"
+#include "net/netplay.h"
 #include "util/string_utils.h"
 #include "util/utf8.h"
 
@@ -287,6 +288,16 @@ int ags_iskeydown(eAGSKeyCode ags_key)
     // left only in case if necessary for some ancient game, but
     // this really may only be required if there's a key waiting loop in
     // script without Wait(1) to let engine poll events in a natural way.
+    if (NetPlay::IsInputRouted())
+    {
+        // netplay: synced key state, identical on both peers
+        SDL_Scancode scan[3];
+        if (!ags_key_to_sdl_scan(ags_key, scan))
+            return 0;
+        return NetPlay::IsScancodeDown(scan[0]) || NetPlay::IsScancodeDown(scan[1]) ||
+            NetPlay::IsScancodeDown(scan[2]);
+    }
+
     if (game.options[OPT_KEYHANDLEAPI] == 0)
         SDL_PumpEvents();
 
@@ -307,9 +318,24 @@ void ags_simulate_keypress(eAGSKeyCode ags_key)
     sdlevent.type = SDL_KEYDOWN;
     sdlevent.key.keysym.sym = SDL_GetKeyFromScancode(scan[0]);
     sdlevent.key.keysym.scancode = scan[0];
+    if (NetPlay::IsInputRouted())
+    {
+        // netplay: script-simulated keys happen on both peers, so they go
+        // straight into the engine queue instead of the (captured) SDL queue
+        g_keyEvtQueue.push_back(sdlevent);
+        sdlevent.type = SDL_KEYUP;
+        g_keyEvtQueue.push_back(sdlevent);
+        return;
+    }
     SDL_PushEvent(&sdlevent);
     sdlevent.type = SDL_KEYUP;
     SDL_PushEvent(&sdlevent);
+}
+
+// Netplay input application: synced events are fed here at frame boundaries
+void ags_net_push_key_event(const SDL_Event &evt)
+{
+    g_keyEvtQueue.push_back(evt);
 }
 
 static void on_sdl_key_down(const SDL_Event &event)
@@ -381,6 +407,9 @@ static int disabled_mouse_device = UINT32_MAX - 10;
 // Returns accumulated mouse button state and clears internal cache by timer
 static int mouse_button_poll()
 {
+    // netplay: accumulated presses are cleared per frame boundary, not by time
+    if (NetPlay::IsInputRouted())
+        return mouse_button_state | mouse_accum_button_state;
     auto now = AGS_Clock::now();
     int result = mouse_button_state | mouse_accum_button_state;
     if (now >= mouse_clear_at_time) {
@@ -478,6 +507,15 @@ void ags_mouse_acquire_relxy(int &x, int &y) {
 
 void ags_domouse() {
     Mouse::Poll();
+}
+
+void ags_net_set_mouse_buttons(int state, int accum) {
+    mouse_button_state = state;
+    mouse_accum_button_state = accum;
+}
+
+void ags_net_add_wheel(int dz) {
+    sys_mouse_z += dz;
 }
 
 int ags_check_mouse_wheel() {
@@ -1024,6 +1062,10 @@ void sys_evt_process_one(const SDL_Event &event) {
 void sys_evt_process_pending(void) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+        // netplay captures input events; they reach the engine at the next
+        // frame boundary as part of the synced tick record
+        if (NetPlay::CaptureEvent(event))
+            continue;
         sys_evt_process_one(event);
     }
 }
