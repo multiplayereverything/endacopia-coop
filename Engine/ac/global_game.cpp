@@ -12,6 +12,7 @@
 //
 //=============================================================================
 #include "net/netplay.h"
+#include "net/coop_mut.h"
 #include "ac/global_game.h"
 #include <math.h>
 #include <stdio.h>
@@ -224,7 +225,7 @@ void FillSaveList(std::vector<SaveListItem> &saves, unsigned top_index, size_t m
     }
 
     // netplay: file times and listing order differ per machine; use host's list
-    if (NetPlay::IsRecording() || NetPlay::IsReplaying())
+    if ((NetPlay::IsRecording() || NetPlay::IsReplaying()) && !COOP_MUT_IF("save_list_local"))
     {
         std::vector<uint8_t> blob;
         for (const auto &s : saves)

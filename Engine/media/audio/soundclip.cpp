@@ -14,10 +14,12 @@
 #include "media/audio/soundclip.h"
 #include "media/audio/audio_core.h"
 #include "net/netplay.h"
+#include "net/coop_mut.h"
 
 // netplay: playback runs on the audio thread in real time, so the guest uses the host's observed state.
 static PlaybackState NetSyncState(NetPlay::OracleKind kind, PlaybackState st)
 {
+    if (COOP_MUT_IF("audio_state_local")) return st;
     return static_cast<PlaybackState>(NetPlay::OracleInt(kind, static_cast<int>(st)));
 }
 

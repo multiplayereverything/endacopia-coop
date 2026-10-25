@@ -1,4 +1,5 @@
 #include "net/netplay_engine.h"
+#include "net/coop_mut.h"
 #include <memory>
 #include <SDL.h>
 #include "ac/common.h"
@@ -10,6 +11,8 @@
 #include "ac/gamesetupstruct.h"
 #include "ac/gamestate.h"
 #include "ac/global_game.h"
+#include "ac/dynobj/scriptdatetime.h"
+#include "platform/base/agsplatformdriver.h"
 #include "ac/mouse.h"
 #include "ac/path_helper.h"
 #include "ac/roomstatus.h"
@@ -128,8 +131,11 @@ void ResetInputState()
 {
     ags_clear_input_state();
     ags_net_set_mouse_buttons(0, 0);
-    ags_net_reset_input_history();
-    reset_gui_mouse_hold();
+    if (!COOP_MUT_IF("input_history_kept"))
+    {
+        ags_net_reset_input_history();
+        reset_gui_mouse_hold();
+    }
 }
 
 void WindowToGame(int &x, int &y)
@@ -273,11 +279,15 @@ bool MakeSnapshot(const String &tmp_path, std::vector<uint8_t> &bytes)
 void RestoreSnapshot(const String &path, int slot)
 {
     // Start from a black screen on both peers: a fade-out from whatever each one shows takes different frame counts.
-    play.screen_is_faded_out = 1;
+    if (!COOP_MUT_IF("fade_state_kept"))
+        play.screen_is_faded_out = 1;
     // Pending engine events aren't saved; a fresh guest and a running host would replay different ones.
     Debug::Printf(kDbgMsg_Info, "[MP] restore: dropping %u pending events", (unsigned)events.size());
-    events.clear();
+    if (!COOP_MUT_IF("pending_events_kept"))
+        events.clear();
     try_restore_save(path, slot);
+    if (COOP_MUT_IF("transition_bitmap_kept"))
+        return;
     // Crossfade/dissolve need the previous screen (not saved); whether it exists changes the fade length,
     // so both peers get the same black one.
     delete saved_viewport_bitmap;
@@ -285,6 +295,8 @@ void RestoreSnapshot(const String &path, int slot)
     saved_viewport_bitmap = BitmapHelper::CreateBitmap(vp.GetWidth(), vp.GetHeight(), game.GetColorDepth());
     saved_viewport_bitmap->Clear();
 }
+
+static uint32_t probe_hash = 0;
 
 struct Fnv
 {
@@ -296,6 +308,32 @@ struct Fnv
     }
     void i(int v) { bytes(&v, sizeof(v)); }
 };
+// Test bot probes: each peer runs the same engine query at the same frame and folds the answer into the
+// state hash, so an answer that differs between peers shows up as a desync on the next frame.
+void RunProbe(const String &name)
+{
+    Fnv f;
+    f.i((int)probe_hash);
+    if (name == "clock")
+    {
+        ScriptDateTime sdt;
+        platform->GetSystemTime(&sdt);
+        f.i(sdt.year); f.i(sdt.month); f.i(sdt.day); f.i(sdt.hour); f.i(sdt.minute); f.i(sdt.second); f.i(sdt.rawUnixTime);
+    }
+    else if (name == "savelist")
+    {
+        std::vector<SaveListItem> saves;
+        FillSaveList(saves, 998);
+        for (const auto &s : saves) { f.i(s.Slot); f.i((int)s.FileTime); f.bytes(s.Description.GetCStr(), s.Description.GetLength()); }
+    }
+    else if (name == "random")
+    {
+        f.i(rand());
+    }
+    probe_hash = f.h;
+    Debug::Printf(kDbgMsg_Info, "[MP] probe %s -> %08x", name.GetCStr(), probe_hash);
+}
+
 
 static void HashScript(Fnv &f, ccInstance *inst)
 {
@@ -430,6 +468,7 @@ void ComputeStateHash(uint32_t out[6])
     misc.i(frames_per_second);
     misc.i(play.wait_counter);
     misc.i(play.screen_is_faded_out);
+    misc.i((int)probe_hash);
     for (size_t i = 1; i < game.SpriteInfos.size(); ++i)
         if (game.SpriteInfos[i].Flags & SPF_DYNAMICALLOC)
             misc.i((int)i);

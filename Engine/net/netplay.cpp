@@ -16,6 +16,8 @@
 #include <SDL.h>
 #include "net/netplay.h"
 #include "net/netplay_engine.h"
+#include "net/steam_transport.h"
+#include "net/coop_mut.h"
 #include "debug/out.h"
 #include "util/file.h"
 #include "util/directory.h"
@@ -56,7 +58,8 @@ enum EvType : uint8_t
     kEv_Button,
     kEv_Wheel,
     kEv_Key,
-    kEv_Text
+    kEv_Text,
+    kEv_Probe   // test bot: every peer runs the named engine probe at the same frame
 };
 
 struct Writer
@@ -109,7 +112,7 @@ static void WriteEvent(Writer &w, const NetEvent &e)
     case kEv_Button: w.i16(e.x); w.i16(e.y); w.u8(e.mask); w.u8(e.press); w.u8(e.eff); break;
     case kEv_Wheel: w.u8((uint8_t)e.dz); break;
     case kEv_Key: w.u8(e.down); w.u16(e.scancode); w.i32(e.sym); w.u16(e.mod); w.u8(e.repeat); break;
-    case kEv_Text: w.str(e.text); break;
+    case kEv_Text: case kEv_Probe: w.str(e.text); break;
     }
 }
 
@@ -124,7 +127,7 @@ static NetEvent ReadEvent(Reader &r)
     case kEv_Button: e.x = r.i16(); e.y = r.i16(); e.mask = r.u8(); e.press = r.u8(); e.eff = r.u8(); break;
     case kEv_Wheel: e.dz = (int8_t)r.u8(); break;
     case kEv_Key: e.down = r.u8(); e.scancode = r.u16(); e.sym = r.i32(); e.mod = r.u16(); e.repeat = r.u8(); break;
-    case kEv_Text: e.text = r.str(); break;
+    case kEv_Text: case kEv_Probe: e.text = r.str(); break;
     default: r.bad = true; break;
     }
     return e;
@@ -197,8 +200,19 @@ struct Connection
     std::vector<uint8_t> outbuf;
     size_t out_at = 0;
     size_t max_msg = MAX_MSG_SIZE; // host limits what a guest may send
+    // Steam P2P instead of a socket: SteamDispatch() appends incoming packets to inbuf.
+    uint64_t steam_peer = 0;
+    DWORD steam_last_rx = 0;
 
-    bool IsOpen() const { return sock != INVALID_SOCKET; }
+    bool IsOpen() const { return sock != INVALID_SOCKET || steam_peer != 0; }
+
+    void AttachSteam(uint64_t peer)
+    {
+        Close();
+        steam_peer = peer;
+        steam_last_rx = GetTickCount();
+        SteamNet::Accept(peer);
+    }
 
     void Close()
     {
@@ -206,6 +220,11 @@ struct Connection
         {
             closesocket(sock);
             sock = INVALID_SOCKET;
+        }
+        if (steam_peer)
+        {
+            SteamNet::Close(steam_peer);
+            steam_peer = 0;
         }
         inbuf.clear();
         outbuf.clear();
@@ -239,6 +258,17 @@ struct Connection
     // Returns false if the connection broke
     bool Flush()
     {
+        if (steam_peer)
+        {
+            if (out_at < outbuf.size() && !SteamNet::Send(steam_peer, outbuf.data() + out_at, outbuf.size() - out_at))
+            {
+                Close();
+                return false;
+            }
+            outbuf.clear();
+            out_at = 0;
+            return true;
+        }
         while (IsOpen() && out_at < outbuf.size())
         {
             int chunk = (int)std::min<size_t>(outbuf.size() - out_at, 1 << 20);
@@ -269,6 +299,12 @@ struct Connection
     bool Pump()
     {
         if (!IsOpen()) return false;
+        if (steam_peer)
+        {
+            // P2P has no close event: the other side pings every second, so silence means it's gone.
+            if (GetTickCount() - steam_last_rx > 15000) { Close(); return false; }
+            return Flush();
+        }
         uint8_t tmp[65536];
         for (;;)
         {
@@ -318,6 +354,9 @@ struct Config
     int control_port = 0;
     String guest_data_dir;
     bool debug = false;
+    bool steam = false;       // host makes a Steam lobby; guest looks for a friend hosting one
+    String steam_friend;      // guest: only join this friend (name), empty = any
+    String steam_dll;         // tests: a fake steam_api.dll for netplay only
 } static cfg;
 
 static bool wsa_ready = false;
@@ -367,6 +406,7 @@ static int snapshot_mx = 0, snapshot_my = 0, snapshot_owner = 0;
 static String snapshot_path;
 static std::vector<NetEvent> guest_out;  // guest input to send
 static uint32_t desync_count = 0;
+static bool welcomed = false;           // guest: the host answered our hello
 // Host, --mp-debug: script globals of recent ticks, to report host values at a guest's desync tick.
 static std::deque<std::pair<uint32_t, std::vector<uint8_t>>> globals_history;
 
@@ -407,6 +447,13 @@ bool ParseCmdArg(int argc, char *argv[], int &ee)
     {
         cfg.role = kRoleGuest;
         String addr = argv[++ee];
+        // "steam" joins any friend hosting through Steam, "steam:<name>" only that friend
+        if (addr.CompareLeftNoCase("steam") == 0)
+        {
+            cfg.steam = true;
+            if (addr.GetLength() > 6) cfg.steam_friend = addr.Mid(6);
+            return true;
+        }
         size_t colon = addr.FindCharReverse(':');
         if (colon != String::NoIndex)
         {
@@ -432,6 +479,16 @@ bool ParseCmdArg(int argc, char *argv[], int &ee)
         size_t colon = spec.FindChar(':');
         if (colon != String::NoIndex)
             NetPlayEngine::SetWatch(atoi(spec.GetCStr()), atoi(spec.GetCStr() + colon + 1));
+        return true;
+    }
+    if (_stricmp(arg, "--mp-steam") == 0)
+    {
+        cfg.steam = true;
+        return true;
+    }
+    if (_stricmp(arg, "--mp-steam-dll") == 0 && ee + 1 < argc)
+    {
+        cfg.steam_dll = argv[++ee];
         return true;
     }
     if (_stricmp(arg, "--mp-debug") == 0)
@@ -530,6 +587,19 @@ void Startup()
         }
         Log("hosting on port %d", cfg.port);
         SetHud(String::FromFormat("HOST on port %d - waiting for player 2", cfg.port), false, 10);
+        if (cfg.steam)
+        {
+            if (SteamNet::Init(cfg.steam_dll))
+            {
+                SteamNet::CreateLobby(2);
+                SetHud("HOST on Steam - friends can join from the launcher", false, 10);
+            }
+            else
+            {
+                Log("Steam hosting unavailable: %s", SteamNet::LastError().GetCStr());
+                SetHud(String::FromFormat("Steam unavailable (%s) - IP join still works", SteamNet::LastError().GetCStr()), false, 15);
+            }
+        }
     }
 }
 
@@ -540,6 +610,7 @@ void Shutdown()
         peer.Send(kMsg_Bye, {});
         peer.Flush();
     }
+    SteamNet::LeaveLobby();
     peer.Close();
     ctl.Close();
     if (listen_sock != INVALID_SOCKET) closesocket(listen_sock);
@@ -701,6 +772,9 @@ static void ApplyEvent(const NetEvent &e)
         NetPlayEngine::PushKeyEvent(s);
         break;
     }
+    case kEv_Probe:
+        NetPlayEngine::RunProbe(e.text);
+        break;
     case kEv_Text:
     {
         SDL_Event s = {};
@@ -982,8 +1056,48 @@ static void HostHandleMessage(uint8_t type, const std::vector<uint8_t> &payload)
     }
 }
 
+// Steam P2P packets come from one queue for all senders: route them to the connection they belong to.
+static void SteamDispatch()
+{
+    std::vector<uint8_t> data;
+    uint64_t from = 0;
+    while (SteamNet::Receive(data, from))
+    {
+        if (peer.steam_peer && from == peer.steam_peer)
+        {
+            peer.inbuf.insert(peer.inbuf.end(), data.begin(), data.end());
+            peer.steam_last_rx = GetTickCount();
+        }
+        else
+        {
+            Log("ignored %u bytes of Steam P2P from %llu", (unsigned)data.size(), (unsigned long long)from);
+        }
+    }
+}
+
+// Host: the first other lobby member becomes the guest connection.
+static void HostSteamPoll()
+{
+    SteamNet::Poll();
+    if (!peer.IsOpen() && SteamNet::LobbyId())
+    {
+        for (uint64_t m : SteamNet::LobbyMembers())
+        {
+            if (m == SteamNet::MyId()) continue;
+            peer.AttachSteam(m);
+            peer.max_msg = 1u << 20;
+            Log("Steam friend %s is in the lobby", SteamNet::NameOf(m).GetCStr());
+            SetHud(String::FromFormat("%s is connecting...", SteamNet::NameOf(m).GetCStr()), true);
+            break;
+        }
+    }
+    SteamDispatch();
+}
+
 static void HostPoll()
 {
+    if (cfg.steam && SteamNet::IsReady())
+        HostSteamPoll();
     if (!peer.IsOpen())
     {
         SOCKET s = AcceptOne(listen_sock);
@@ -1029,6 +1143,7 @@ static void HostDoSnapshot()
         Log("snapshot failed");
         return;
     }
+    const uint32_t tick_before_restore = tick_no;
     const uint32_t seed = (uint32_t)GetTickCount() ^ (uint32_t)(tick_no * 2654435761u);
     // files go first so the guest's save dir matches before restoring
     Writer files;
@@ -1045,7 +1160,7 @@ static void HostDoSnapshot()
     srand(seed);
     ResetNetInput();
     Writer w;
-    w.u32(tick_no);
+    w.u32(COOP_MUT_IF("snapshot_tick_before_restore") ? tick_before_restore : tick_no);
     w.u32(seed);
     w.bytes(files.b.data(), files.b.size());
     // the logical mouse after restore is part of the snapshot message
@@ -1104,6 +1219,8 @@ static void GuestHandleMessage(uint8_t type, const std::vector<uint8_t> &payload
     {
     case kMsg_Welcome:
     {
+        if (welcomed) break; // a repeated hello got a second welcome
+        welcomed = true;
         uint32_t proto = r.u32();
         String tra = r.str();
         r.i32(); // host frame rate (informational)
@@ -1169,6 +1286,11 @@ static void GuestHandleMessage(uint8_t type, const std::vector<uint8_t> &payload
 static void GuestPoll()
 {
     if (!peer.IsOpen()) return;
+    if (peer.steam_peer)
+    {
+        SteamNet::Poll();
+        SteamDispatch();
+    }
     GuestSendInput();
     if (!peer.Pump())
     {
@@ -1232,20 +1354,66 @@ static bool PumpSystemWhileWaiting()
 
 static void PollControl();
 
+// Guest over Steam: find a friend who is hosting (in a lobby of this game), join the lobby, talk to its owner.
+static bool GuestFindSteamHost()
+{
+    if (!SteamNet::Init(cfg.steam_dll))
+        return false;
+    SetHud(cfg.steam_friend.IsEmpty() ? String("Looking for a Steam friend hosting Endacopia...")
+        : String::FromFormat("Looking for %s on Steam...", cfg.steam_friend.GetCStr()), true);
+    const DWORD give_up = GetTickCount() + 60000;
+    while (GetTickCount() < give_up)
+    {
+        SteamNet::Poll();
+        for (const auto &f : SteamNet::FindFriendLobbies())
+        {
+            if (!cfg.steam_friend.IsEmpty() && f.name.CompareNoCase(cfg.steam_friend) != 0) continue;
+            Log("joining %s's lobby %llu", f.name.GetCStr(), (unsigned long long)f.lobby);
+            SetHud(String::FromFormat("Joining %s...", f.name.GetCStr()), true);
+            SteamNet::JoinLobby(f.lobby);
+            const DWORD join_until = GetTickCount() + 20000;
+            while (!SteamNet::LobbyId() && !SteamNet::LobbyFailed() && GetTickCount() < join_until)
+            {
+                SteamNet::Poll();
+                if (!PumpSystemWhileWaiting()) return false;
+                Sleep(50);
+            }
+            const uint64_t owner = SteamNet::LobbyOwner();
+            if (SteamNet::LobbyId() && owner)
+            {
+                peer.AttachSteam(owner);
+                return true;
+            }
+            Log("lobby join failed: %s", SteamNet::LastError().GetCStr());
+        }
+        PollControl();
+        if (!PumpSystemWhileWaiting()) return false;
+        Sleep(500);
+    }
+    SteamNet::LeaveLobby();
+    return false;
+}
+
 String GuestWaitForJoin(int &slot)
 {
     slot = 1000;
     if (cfg.role != kRoleGuest)
         return "";
     gphase = kGuest_Connecting;
-    SetHud(String::FromFormat("Connecting to %s:%d...", cfg.host_addr.GetCStr(), cfg.port), true);
+    if (cfg.steam && !GuestFindSteamHost())
+    {
+        GuestGoSolo(SteamNet::LastError().GetCStr());
+        return "";
+    }
+    if (!cfg.steam)
+        SetHud(String::FromFormat("Connecting to %s:%d...", cfg.host_addr.GetCStr(), cfg.port), true);
 
     addrinfo hints = {}, *res = nullptr;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     String port_s = String::FromFormat("%d", cfg.port);
     auto give_up_at = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-    while (!peer.IsOpen())
+    while (!peer.IsOpen() && !cfg.steam)
     {
         if (getaddrinfo(cfg.host_addr.GetCStr(), port_s.GetCStr(), &hints, &res) == 0 && res)
         {
@@ -1266,17 +1434,24 @@ String GuestWaitForJoin(int &slot)
         PollControl();
         Sleep(500);
     }
-    Log("connected to host %s:%d", cfg.host_addr.GetCStr(), cfg.port);
+    Log("connected to host %s", cfg.steam ? SteamNet::NameOf(peer.steam_peer).GetCStr() : cfg.host_addr.GetCStr());
     Writer w;
     w.u32(MP_MAGIC);
     w.u32(MP_PROTOCOL);
     w.str(NetPlayEngine::GetGameGuid());
     w.str(cfg.name);
     peer.Send(kMsg_Hello, w.b);
+    DWORD hello_at = GetTickCount();
 
     give_up_at = std::chrono::steady_clock::now() + std::chrono::minutes(30);
     while (!snapshot_ready)
     {
+        // Over Steam the host may accept our P2P session only after the first hello; say it again until it answers.
+        if (cfg.steam && !welcomed && GetTickCount() - hello_at > 3000)
+        {
+            peer.Send(kMsg_Hello, w.b);
+            hello_at = GetTickCount();
+        }
         GuestPoll();
         PollControl();
         if (gphase == kGuest_Solo || !PumpSystemWhileWaiting() || std::chrono::steady_clock::now() > give_up_at)
@@ -1465,7 +1640,8 @@ void OnSnapshotRestored()
     if (cfg.role != kRoleGuest || !snapshot_ready)
         return;
     snapshot_ready = false;
-    srand(snapshot_seed);
+    if (!COOP_MUT_IF("rng_not_reseeded"))
+        srand(snapshot_seed);
     ResetNetInput();
     logical_x = snapshot_mx;
     logical_y = snapshot_my;
@@ -1622,6 +1798,12 @@ static void HandleControlLine(const String &line)
     else if (cmd == "shot")
     {
         NetPlayEngine::SaveScreenshot(line.Mid(5));
+        CtlReply("OK");
+    }
+    else if (cmd == "probe" && tok.size() > 1 && cfg.role == kRoleHost && synced)
+    {
+        NetEvent e; e.player = 0; e.type = kEv_Probe; e.text = tok[1];
+        QueueLocal(e);
         CtlReply("OK");
     }
     else if (cmd == "resync")

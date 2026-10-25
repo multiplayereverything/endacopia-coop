@@ -16,6 +16,7 @@
 //
 //=============================================================================
 #include "net/netplay.h"
+#include "net/coop_mut.h"
 #include "platform/base/agsplatformdriver.h"
 #include <stdio.h>
 #include <thread>
@@ -86,6 +87,7 @@ void AGSPlatformDriver::GetSystemTime(ScriptDateTime *sdt) {
     sdt->month = newtime->tm_mon + 1;
     sdt->year = newtime->tm_year + 1900;
     // netplay: both players see the host's clock
+    if (COOP_MUT_IF("clock_local")) return;
     sdt->rawUnixTime = NetPlay::OracleInt(NetPlay::kOr_Time, sdt->rawUnixTime);
     sdt->hour = NetPlay::OracleInt(NetPlay::kOr_Time, sdt->hour);
     sdt->minute = NetPlay::OracleInt(NetPlay::kOr_Time, sdt->minute);

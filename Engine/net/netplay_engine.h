@@ -54,6 +54,8 @@ namespace NetPlayEngine
     void CopyGlobals(std::vector<uint8_t> &out);
     // --mp-watch <script>:<offset>: logs every script write to that global, with the preceding API calls.
     void SetWatch(int script, int offset);
+    // Test bot: run a named engine probe (clock, savelist, random) and fold the answer into the state hash.
+    void RunProbe(const String &name);
     void CheckWatchPerFrame(uint32_t tick);
 }
 

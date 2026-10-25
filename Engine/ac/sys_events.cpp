@@ -29,6 +29,7 @@
 #include "platform/base/sys_main.h"
 #include "main/engine.h"
 #include "net/netplay.h"
+#include "net/coop_mut.h"
 #include "util/string_utils.h"
 #include "util/utf8.h"
 
@@ -408,7 +409,7 @@ static int disabled_mouse_device = UINT32_MAX - 10;
 static int mouse_button_poll()
 {
     // netplay: accumulated presses are cleared per frame boundary, not by time
-    if (NetPlay::IsInputRouted())
+    if (NetPlay::IsInputRouted() && !COOP_MUT_IF("mouse_poll_by_time"))
         return mouse_button_state | mouse_accum_button_state;
     auto now = AGS_Clock::now();
     int result = mouse_button_state | mouse_accum_button_state;

@@ -11,6 +11,7 @@
 // https://opensource.org/license/artistic-2-0/
 //
 //=============================================================================
+#include "net/coop_mut.h"
 #include <vector>
 #include <string.h>
 #include "ac/dynobj/managedobjectpool.h"
@@ -296,7 +297,7 @@ int ManagedObjectPool::ReadFromDisk(Stream *in, ICCObjectReader *reader) {
         }
     }
     // netplay: GC timing decides which handles get reused, so it must restart identically on every restore
-    objectCreationCounter = 0;
+    if (!COOP_MUT_IF("gc_counter_kept")) objectCreationCounter = 0;
 
     return 0;
 }

@@ -17,6 +17,12 @@ set_target_properties(engine PROPERTIES
 
 target_include_directories(engine PUBLIC .)
 
+# Endacopia Multiplayer test builds: switchable mutation twins (net/coop_mut.h). Never set for shipped builds.
+option(AGS_MP_MUTANTS "Build netplay mutation twins (test builds only)" OFF)
+if (AGS_MP_MUTANTS)
+    target_compile_definitions(engine PRIVATE COOP_RUNTIME_MUT)
+endif ()
+
 target_sources(engine
     PRIVATE
     ac/asset_helper.h
@@ -389,6 +395,9 @@ target_sources(engine
     net/netplay.h
     net/netplay_engine.cpp
     net/netplay_engine.h
+    net/steam_transport.cpp
+    net/steam_transport.h
+    net/coop_mut.h
     media/audio/ambientsound.cpp
     media/audio/ambientsound.h
     media/audio/audio_core.cpp
