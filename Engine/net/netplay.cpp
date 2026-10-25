@@ -4,11 +4,14 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <compressapi.h>
 #undef DeleteFile
 #undef CreateFile
 #undef CreateDirectory
 #include <algorithm>
 #include <deque>
+#include <map>
+#include <set>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -32,7 +35,7 @@ namespace NetPlay
 {
 
 static const uint32_t MP_MAGIC    = 0x31504D45; // 'EMP1'
-static const uint32_t MP_PROTOCOL = 3;
+static const uint32_t MP_PROTOCOL = 5;
 static const int      DEFAULT_PORT = 27960;
 static const uint32_t OWNER_IDLE_TICKS = 16;   // cursor ownership hand-over delay
 static const size_t   MAX_MSG_SIZE = 256u * 1024u * 1024u;
@@ -888,27 +891,91 @@ void OracleBlob(OracleKind kind, std::vector<uint8_t> &data)
 }
 
 // Join: the host sends its save folder so file reads match on both peers.
-static void CollectDir(Writer &w, uint8_t dir_id, const String &dir)
+static uint64_t Fnv64(const uint8_t *p, size_t n)
 {
-    std::vector<std::pair<String, std::vector<uint8_t>>> files;
-    if (!dir.IsEmpty() && File::IsDirectory(dir))
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    return h;
+}
+
+// Files the guest already has from an earlier session, so the host only sends what changed.
+struct FileInfo { uint32_t size; uint64_t hash; };
+typedef std::map<String, FileInfo> Manifest;
+static Manifest guest_manifest[2];
+
+static bool ReadWholeFile(const String &full, std::vector<uint8_t> &bytes)
+{
+    std::unique_ptr<Stream> in(File::OpenFileRead(full));
+    if (!in) return false;
+    const soff_t len = in->GetLength();
+    if (len < 0 || len > (64 << 20)) return false;
+    bytes.resize((size_t)len);
+    if (len > 0) in->Read(bytes.data(), (size_t)len);
+    return true;
+}
+
+// Mirror files: everything in the folder except our own temporary files.
+static std::vector<String> MirrorFiles(const String &dir)
+{
+    std::vector<String> out;
+    if (dir.IsEmpty() || !File::IsDirectory(dir)) return out;
+    for (FindFile ff = FindFile::OpenFiles(dir, "*"); !ff.AtEnd(); ff.Next())
+        if (!ff.Current().StartsWith("mp_")) out.push_back(ff.Current());
+    return out;
+}
+
+static void WriteManifest(Writer &w, const String &dir)
+{
+    std::vector<String> names = MirrorFiles(dir);
+    std::vector<std::pair<String, FileInfo>> items;
+    for (const auto &n : names)
     {
-        for (FindFile ff = FindFile::OpenFiles(dir, "*"); !ff.AtEnd(); ff.Next())
-        {
-            String name = ff.Current();
-            String full = Path::ConcatPaths(dir, name);
-            std::unique_ptr<Stream> in(File::OpenFileRead(full));
-            if (!in) continue;
-            soff_t len = in->GetLength();
-            if (len < 0 || len > (64 << 20)) continue;
-            std::vector<uint8_t> bytes((size_t)len);
-            if (len > 0) in->Read(bytes.data(), (size_t)len);
-            files.emplace_back(name, std::move(bytes));
-        }
+        std::vector<uint8_t> b;
+        if (ReadWholeFile(Path::ConcatPaths(dir, n), b))
+            items.push_back({ n, FileInfo{ (uint32_t)b.size(), Fnv64(b.data(), b.size()) } });
     }
+    w.u32((uint32_t)items.size());
+    for (const auto &it : items) { w.str(it.first); w.u32(it.second.size); w.u32((uint32_t)it.second.hash); w.u32((uint32_t)(it.second.hash >> 32)); }
+}
+
+static void ReadManifest(Reader &r, Manifest &m)
+{
+    m.clear();
+    const uint32_t n = r.u32();
+    for (uint32_t i = 0; i < n && !r.bad; ++i)
+    {
+        String name = r.str();
+        FileInfo fi;
+        fi.size = r.u32();
+        const uint32_t lo = r.u32(), hi = r.u32();
+        fi.hash = ((uint64_t)hi << 32) | lo;
+        m[name] = fi;
+    }
+}
+
+// kind 0 = bytes follow, 1 = the guest already has this exact file
+static void CollectDir(Writer &w, uint8_t dir_id, const String &dir, const Manifest &have)
+{
+    std::vector<String> names = MirrorFiles(dir);
     w.u8(dir_id);
-    w.u32((uint32_t)files.size());
-    for (auto &f : files) { w.str(f.first); w.blob(f.second); }
+    w.u32((uint32_t)names.size());
+    uint32_t sent = 0;
+    for (const auto &n : names)
+    {
+        std::vector<uint8_t> b;
+        ReadWholeFile(Path::ConcatPaths(dir, n), b);
+        w.str(n);
+        auto it = have.find(n);
+        if (it != have.end() && it->second.size == b.size() && it->second.hash == Fnv64(b.data(), b.size()))
+        {
+            w.u8(1);
+            continue;
+        }
+        w.u8(0);
+        w.blob(b);
+        sent++;
+    }
+    Log("mirror dir %d: %u files, %u sent, %u unchanged", dir_id, (unsigned)names.size(), sent, (unsigned)names.size() - sent);
 }
 
 static void WriteDirFiles(Reader &r, const String &user_dir, const String &app_dir)
@@ -920,26 +987,54 @@ static void WriteDirFiles(Reader &r, const String &user_dir, const String &app_d
         String dir = dir_id == 0 ? user_dir : app_dir;
         // A relative dir means the engine fell back to the game folder; never mirror there.
         bool writable = !dir.IsEmpty() && !dir.StartsWith(".") && File::IsDirectory(dir);
-        if (writable && dir_id == 0)
-        {
-            // drop stale saves so the mirror matches host exactly
-            std::vector<String> old;
-            for (FindFile ff = FindFile::OpenFiles(dir, "agssave.*"); !ff.AtEnd(); ff.Next())
-                old.push_back(Path::ConcatPaths(dir, ff.Current()));
-            for (auto &o : old) File::DeleteFile(o);
-        }
+        std::set<String> listed;
+        uint32_t written = 0;
         for (uint32_t i = 0; i < count && !r.bad; ++i)
         {
             String name = r.str();
-            std::vector<uint8_t> bytes = r.blob();
+            const bool keep = r.u8() == 1;
+            std::vector<uint8_t> bytes;
+            if (!keep) bytes = r.blob();
             if (!writable || name.FindChar('/') != String::NoIndex || name.FindChar('\\') != String::NoIndex ||
                 name.FindString("..") != String::NoIndex)
                 continue;
+            listed.insert(name);
+            if (keep) continue;
             std::unique_ptr<Stream> out(File::CreateFile(Path::ConcatPaths(dir, name)));
             if (out && !bytes.empty()) out->Write(bytes.data(), bytes.size());
+            written++;
         }
-        Log("mirrored %u files into %s", count, dir.GetCStr());
+        // Files the host doesn't have must go too, or the guest's save menu would show extra saves.
+        if (writable)
+            for (const auto &n : MirrorFiles(dir))
+                if (!listed.count(n)) File::DeleteFile(Path::ConcatPaths(dir, n));
+        Log("mirrored %u files into %s (%u written, %u unchanged)", count, dir.GetCStr(), written, count - written);
     }
+}
+
+// Join snapshots are mostly save files, which compress about 7x. MSZIP from cabinet.dll (Windows 8+).
+static bool Compress(const std::vector<uint8_t> &in, std::vector<uint8_t> &out)
+{
+    COMPRESSOR_HANDLE h = nullptr;
+    if (!CreateCompressor(COMPRESS_ALGORITHM_MSZIP, nullptr, &h)) return false;
+    SIZE_T need = 0;
+    ::Compress(h, in.data(), in.size(), nullptr, 0, &need);
+    out.resize(need);
+    const bool ok = ::Compress(h, in.data(), in.size(), out.data(), out.size(), &need) != FALSE;
+    out.resize(need);
+    CloseCompressor(h);
+    return ok;
+}
+
+static bool Decompress(const std::vector<uint8_t> &in, size_t raw_len, std::vector<uint8_t> &out)
+{
+    DECOMPRESSOR_HANDLE h = nullptr;
+    if (!CreateDecompressor(COMPRESS_ALGORITHM_MSZIP, nullptr, &h)) return false;
+    out.resize(raw_len);
+    SIZE_T got = 0;
+    const bool ok = ::Decompress(h, in.data(), in.size(), out.data(), out.size(), &got) != FALSE && got == raw_len;
+    CloseDecompressor(h);
+    return ok;
 }
 
 static void HostDropGuest(const char *why)
@@ -997,6 +1092,11 @@ static void HostHandleMessage(uint8_t type, const std::vector<uint8_t> &payload)
     case kMsg_JoinReq:
     {
         uint8_t reason = r.u8();
+        if (reason == 0 && !r.bad && r.at < r.n)
+        {
+            ReadManifest(r, guest_manifest[0]);
+            ReadManifest(r, guest_manifest[1]);
+        }
         guest_wants_snapshot = true;
         if (reason == 1)
         {
@@ -1150,8 +1250,8 @@ static void HostDoSnapshot()
     files.u8(guest_needs_files ? 1 : 0);
     if (guest_needs_files)
     {
-        CollectDir(files, 0, NetPlayEngine::GetUserDataDir());
-        CollectDir(files, 1, NetPlayEngine::GetAppDataDir());
+        CollectDir(files, 0, NetPlayEngine::GetUserDataDir(), guest_manifest[0]);
+        CollectDir(files, 1, NetPlayEngine::GetAppDataDir(), guest_manifest[1]);
     }
 
     // Restoring runs fade frames that advance tick_no, so the shared timeline starts after the restore.
@@ -1168,7 +1268,21 @@ static void HostDoSnapshot()
     w.i32(logical_y);
     w.i32(owner);
     w.blob(save_bytes);
-    peer.Send(kMsg_Snapshot, w.b);
+    std::vector<uint8_t> packed;
+    Writer z;
+    if (Compress(w.b, packed) && packed.size() < w.b.size())
+    {
+        z.u8(1);
+        z.u32((uint32_t)w.b.size());
+        z.bytes(packed.data(), packed.size());
+    }
+    else
+    {
+        z.u8(0);
+        z.bytes(w.b.data(), w.b.size());
+    }
+    Log("snapshot message %u bytes (%u before compression)", (unsigned)z.b.size(), (unsigned)w.b.size());
+    peer.Send(kMsg_Snapshot, z.b);
     guest_needs_files = false;
     guest_wants_snapshot = false;
 
@@ -1231,6 +1345,8 @@ static void GuestHandleMessage(uint8_t type, const std::vector<uint8_t> &payload
             NetPlayEngine::ChangeTranslation(tra);
         }
         Writer w; w.u8(0);
+        WriteManifest(w, NetPlayEngine::GetUserDataDir());
+        WriteManifest(w, NetPlayEngine::GetAppDataDir());
         peer.Send(kMsg_JoinReq, w.b);
         SetHud("Downloading game state from host...", true);
         break;
@@ -1245,6 +1361,18 @@ static void GuestHandleMessage(uint8_t type, const std::vector<uint8_t> &payload
     }
     case kMsg_Snapshot:
     {
+        std::vector<uint8_t> unpacked;
+        if (r.u8() == 1)
+        {
+            const uint32_t raw = r.u32();
+            std::vector<uint8_t> packed(payload.begin() + 5, payload.end());
+            if (r.bad || !Decompress(packed, raw, unpacked)) { GuestGoSolo("bad snapshot (decompression)"); return; }
+        }
+        else
+        {
+            unpacked.assign(payload.begin() + 1, payload.end());
+        }
+        r = Reader(unpacked.data(), unpacked.size());
         snapshot_tick = r.u32();
         snapshot_seed = r.u32();
         if (r.u8() != 0)

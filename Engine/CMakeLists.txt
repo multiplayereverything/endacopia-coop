@@ -587,7 +587,7 @@ else()
 endif()
 
 if (WIN32)
-    target_link_libraries(engine PUBLIC shlwapi ws2_32)
+    target_link_libraries(engine PUBLIC shlwapi ws2_32 cabinet)
 endif()
 
 if(ANDROID)
