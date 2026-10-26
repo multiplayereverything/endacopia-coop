@@ -1,0 +1,25 @@
+{
+  "_notes": "Mutation twins of the Endacopia netplay fixes. Each twin undoes one fix in the build-mut engine; the named scenario must then report RESULT: FAIL. Run from the workspace root: python -I coop-anything/tools/mutants/run_twins.py tools/twins.json",
+  "label": "endacopia-netplay",
+  "cwd": "..",
+  "cmd": ["node", "tools/mptest.js", "tools/scenarios/{test}.txt", "--engine", "build-mut/Release/ags.exe"],
+  "real_regex": "RESULT: PASS",
+  "caught_regex": "RESULT: FAIL",
+  "timeout_s": 600,
+  "jobs": 1,
+  "scan": ["../engine/Engine/**/*.cpp"],
+  "tests": ["smoke", "probes", "join-holding", "saves/agssave.003", "saves/agssave__backup_.002", "saves/agssave__backup_.005", "saves/agssave__backup_.999"],
+  "twins": {
+    "audio_state_local": "saves/agssave.003",
+    "gc_counter_kept": "saves/agssave__backup_.999",
+    "transition_bitmap_kept": "saves/agssave__backup_.002",
+    "fade_state_kept": "smoke",
+    "pending_events_kept": "saves/agssave__backup_.002",
+    "input_history_kept": "join-holding",
+    "snapshot_tick_before_restore": "smoke",
+    "rng_not_reseeded": "smoke",
+    "clock_local": "probes",
+    "mouse_poll_by_time": "saves/agssave.003",
+    "save_list_local": "probes"
+  }
+}

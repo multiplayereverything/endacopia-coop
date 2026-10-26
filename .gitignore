@@ -1,0 +1,9 @@
+build/
+build-mut/
+game-test/
+coop-anything/
+tools/out/
+tools/steam-mock/build/
+bin/
+*.log
+__pycache__/

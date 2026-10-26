@@ -1,0 +1,13 @@
+# Join through (fake) Steam: the host makes a lobby, the guest finds the friend hosting it and joins over P2P.
+steam
+start --loadsavedgame "%LOCALAPPDATA%/EndacopiaMP/lab-host/agssave (backup).002"
+waitsync 240000
+wait 3000
+check
+monkey 30 41
+wait 3000
+check
+host probe random
+wait 2000
+check
+stop

@@ -1,0 +1,17 @@
+# Two players through the chaos box (TCP mode, profile hell), random play, then an outage.
+nodebug
+allow-drop
+chaos hell
+start --loadsavedgame "%LOCALAPPDATA%/EndacopiaMP/lab-host/agssave (backup).002"
+waitsync 240000
+wait 3000
+check
+monkey 45 21
+wait 4000
+check
+chaos-partition 3000
+monkey 15 22
+wait 8000
+chaos-stats
+check
+stop

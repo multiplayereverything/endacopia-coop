@@ -1,0 +1,10 @@
+start --loadsavedgame "%LOCALAPPDATA%/EndacopiaMP/lab-host/agssave (backup).002"
+waitsync 180000
+wait 3000
+shot save-agssave__backup_.002-joined
+check
+monkey 60 1
+wait 2000
+shot save-agssave__backup_.002-end
+check
+stop

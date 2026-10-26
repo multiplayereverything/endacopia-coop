@@ -1,0 +1,5 @@
+start
+waitsync 120000
+wait 4000
+check
+stop

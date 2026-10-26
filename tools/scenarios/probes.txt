@@ -1,0 +1,15 @@
+# Test bot: engine probes run on every peer at the same frame; a wrong answer is a desync.
+start
+waitsync 180000
+wait 3000
+check
+host probe clock
+wait 2000
+check
+host probe savelist
+wait 2000
+check
+host probe random
+wait 2000
+check
+stop

@@ -1,0 +1,19 @@
+# The host holds the left button while a guest joins, and releases it after the shared restore.
+players 1
+start --loadsavedgame "%LOCALAPPDATA%/EndacopiaMP/lab-host/agssave (backup).002"
+wait 8000
+host down 200 120 1
+wait 500
+join guest
+waitsync 180000
+wait 1000
+host up 200 120 1
+wait 500
+host click 120 150 1
+guest click 250 150 1
+wait 3000
+check
+monkey 15 31
+wait 2000
+check
+stop
