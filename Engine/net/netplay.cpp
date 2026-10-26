@@ -52,7 +52,8 @@ enum MsgType : uint8_t
     kMsg_Desync,        // guest -> host (diagnostics)
     kMsg_Ping,
     kMsg_Pong,
-    kMsg_Bye
+    kMsg_Bye,
+    kMsg_KeepAlive      // guest -> host while it can't answer pings (e.g. downloading the join snapshot)
 };
 
 enum EvType : uint8_t
@@ -205,7 +206,8 @@ struct Connection
     size_t max_msg = MAX_MSG_SIZE; // host limits what a guest may send
     // Steam P2P instead of a socket: SteamDispatch() appends incoming packets to inbuf.
     uint64_t steam_peer = 0;
-    DWORD steam_last_rx = 0;
+    DWORD steam_last_rx = 0;      // last data from the other side, either transport
+    bool idle_timeout = false;    // player connections only: the other side pings every second
 
     bool IsOpen() const { return sock != INVALID_SOCKET || steam_peer != 0; }
 
@@ -214,6 +216,7 @@ struct Connection
         Close();
         steam_peer = peer;
         steam_last_rx = GetTickCount();
+        idle_timeout = true;
         SteamNet::Accept(peer);
     }
 
@@ -232,12 +235,14 @@ struct Connection
         inbuf.clear();
         outbuf.clear();
         out_at = 0;
+        idle_timeout = false;
     }
 
     void Attach(SOCKET s)
     {
         Close();
         sock = s;
+        steam_last_rx = GetTickCount();
         u_long nb = 1;
         ioctlsocket(sock, FIONBIO, &nb);
         BOOL nodelay = TRUE;
@@ -305,7 +310,7 @@ struct Connection
         if (steam_peer)
         {
             // P2P has no close event: the other side pings every second, so silence means it's gone.
-            if (GetTickCount() - steam_last_rx > 15000) { Close(); return false; }
+            if (idle_timeout && GetTickCount() - steam_last_rx > 15000) { Close(); return false; }
             return Flush();
         }
         uint8_t tmp[65536];
@@ -315,6 +320,7 @@ struct Connection
             if (got > 0)
             {
                 inbuf.insert(inbuf.end(), tmp, tmp + got);
+                steam_last_rx = GetTickCount();
                 continue;
             }
             if (got == 0) { Close(); return false; }
@@ -322,6 +328,9 @@ struct Connection
             Close();
             return false;
         }
+        // A broken path between the peers (a router, a relay) can leave our socket open while nothing arrives;
+        // the other side pings every second, so 15 s of silence means the session is gone.
+        if (idle_timeout && GetTickCount() - steam_last_rx > 15000) { Close(); return false; }
         return Flush();
     }
 
@@ -1204,6 +1213,7 @@ static void HostPoll()
         if (s != INVALID_SOCKET)
         {
             peer.Attach(s);
+            peer.idle_timeout = true;
             peer.max_msg = 1u << 20;
             Log("guest connected");
             SetHud("Player 2 connecting...", true);
@@ -1414,6 +1424,12 @@ static void GuestHandleMessage(uint8_t type, const std::vector<uint8_t> &payload
 static void GuestPoll()
 {
     if (!peer.IsOpen()) return;
+    static DWORD keepalive_at = 0;
+    if (GetTickCount() - keepalive_at > 2000)
+    {
+        peer.Send(kMsg_KeepAlive, {});
+        keepalive_at = GetTickCount();
+    }
     if (peer.steam_peer)
     {
         SteamNet::Poll();
@@ -1547,7 +1563,10 @@ String GuestWaitForJoin(int &slot)
         {
             SOCKET s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
             if (s != INVALID_SOCKET && connect(s, res->ai_addr, (int)res->ai_addrlen) == 0)
+            {
                 peer.Attach(s);
+                peer.idle_timeout = true;
+            }
             else if (s != INVALID_SOCKET)
                 closesocket(s);
             freeaddrinfo(res);
